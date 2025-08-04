@@ -45,4 +45,4 @@ jobs:
         with:
           context: .
           push: true
-          tags: your_dockerhub_username/anomaly-detector-api:latest
+          tags: ricky2509/anomaly-detector-api:latest
