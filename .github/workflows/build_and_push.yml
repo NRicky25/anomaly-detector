@@ -1,0 +1,27 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - main # This workflow will run whenever you push to the 'main' branch
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest # The type of runner that the job will execute on
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4 # Action to check out your repository code
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }} # Your Docker Hub username stored as a secret
+          password: ${{ secrets.DOCKER_PASSWORD }} # Your Docker Hub token/password stored as a secret
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: . # The build context (root of your repository)
+          push: true # Push the image to the registry
+          tags: nricky25/anomaly-detector-api:latest # Replace with your Docker Hub username and image name
