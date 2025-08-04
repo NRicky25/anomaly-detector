@@ -24,4 +24,4 @@ jobs:
         with:
           context: . # The build context (root of your repository)
           push: true # Push the image to the registry
-          tags: nricky25/anomaly-detector-api:latest # Replace with your Docker Hub username and image name
+          tags: ricky2509/anomaly-detector-api:latest # Replace with your Docker Hub username and image name
