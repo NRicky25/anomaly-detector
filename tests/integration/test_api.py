@@ -133,7 +133,6 @@ def test_predict_malformed_json_body(client):
     assert "detail" in response.json()
     # For 422 errors, 'detail' is typically a list of validation errors
     assert isinstance(response.json()["detail"], list)
-    # You can be more specific, checking for errors related to the request body
     assert any("body" in error["loc"] for error in response.json()["detail"])
 
 
@@ -165,15 +164,12 @@ def test_predict_transaction_with_very_large_amount(client):
 
     assert response.status_code == 200
     # ASSERTION CHANGES:
-    assert isinstance(response.json(), list)  # Ensure it's a list
-    assert len(response.json()) == 1          # Ensure it has exactly one item
-    result_data = response.json()[0]          # Get the first (and only) item
+    assert isinstance(response.json(), list)
+    assert len(response.json()) == 1
+    result_data = response.json()[0]
     assert "predicted_class" in result_data
     assert "prediction_probability" in result_data
     assert "is_fraud" in result_data
-
-    # CRUCIAL: Assert on the EXPECTED PREDICTION for this large amount
-    # From your output, it was: {'is_fraud': False, 'predicted_class': 0, 'prediction_probability': 0.01, 'transaction_index': 0}
     assert result_data["is_fraud"] == False
     assert result_data["predicted_class"] == 0
     assert result_data["prediction_probability"] == 0.01

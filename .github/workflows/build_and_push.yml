@@ -1,27 +1,48 @@
-name: Build and Push Docker Image
+name: CI/CD Pipeline
 
 on:
   push:
     branches:
-      - main # This workflow will run whenever you push to the 'main' branch
+      - main
+  pull_request:
+    branches:
+      - main
 
 jobs:
-  build-and-push:
-    runs-on: ubuntu-latest # The type of runner that the job will execute on
+  build_and_test:
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4 # Action to check out your repository code
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Log in to Docker Hub
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest # Install pytest for testing
+          pip install uvicorn # Ensure uvicorn is available if needed by tests/fixtures
+          pip install python-multipart # Usually needed by FastAPI when handling requests
+
+      - name: Run tests
+        run: |
+          pytest -v tests/integration/test_api.py # This is where your tests actually run!
+
+      # Optional: Build Docker image only if tests pass
+      - name: Log in to Docker Hub (or other registry)
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          password: ${{ secrets.DOCKER_TOKEN }}
 
-      - name: Build and Push Docker Image
+      - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: . # The build context (root of your repository)
-          push: true # Push the image to the registry
-          tags: ricky2509/anomaly-detector-api:latest # Replace with your Docker Hub username and image name
+        context: .
+        push: true
+        tags: your_dockerhub_username/anomaly-detector-api:latest
