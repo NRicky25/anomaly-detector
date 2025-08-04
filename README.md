@@ -24,6 +24,7 @@ This project demonstrates an end-to-end Machine Learning solution for detecting 
 
 ## Project Structure
 
+```
 anomaly-detector-api/
 ├── notebooks/
 │ └── model_training_v1.ipynb # Jupyter notebook for data exploration, model training, and evaluation
@@ -38,6 +39,7 @@ anomaly-detector-api/
 ├── Dockerfile # Defines the Docker image for the API
 ├── requirements.txt # Python dependencies for the project
 └── README.md # This documentation file
+```
 
 ## Setup and Running the Application
 
@@ -52,8 +54,8 @@ anomaly-detector-api/
 1.  **Clone the Repository:**
 
     ```bash
-    git clone [https://github.com/YOUR_GITHUB_USERNAME/anomaly-detector-api.git](https://github.com/YOUR_GITHUB_USERNAME/anomaly-detector-api.git)
-    cd anomaly-detector-api
+    git clone https://github.com/NRicky25/anomaly-detector.git
+    cd anomaly-detector
     ```
 
     _(Replace `YOUR_GITHUB_USERNAME` with your actual GitHub username)_
