@@ -1,5 +1,5 @@
 # src/main.py
-
+from contextlib import asynccontextmanager # NEW IMPORT
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 import joblib
@@ -8,50 +8,82 @@ import pandas as pd
 import numpy as np
 from typing import List, Dict, Any, Union
 
-app = FastAPI(
-    title="Credit Card Fraud Detection API",
-    description="A FastAPI endpoint for predicting credit card fraud using a pre-trained Random Forest model.",
-    version="1.0.0"
-)
-
 # --- Configuration for Model and Scalers ---
-# Define the base directory (one level up from src to anomaly-detector-api)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-# Construct paths to the models and scalers
 MODEL_PATH = os.path.join(BASE_DIR, 'models', 'development', 'random_forest_model.joblib')
 SCALER_AMOUNT_PATH = os.path.join(BASE_DIR, 'models', 'development', 'scaler_amount.joblib')
 SCALER_TIME_PATH = os.path.join(BASE_DIR, 'models', 'development', 'scaler_time.joblib')
+OPTIMAL_THRESHOLD = 0.26
 
-# Define the optimal threshold determined during model training
-OPTIMAL_THRESHOLD = 0.26 # Make sure this matches the threshold you found!
+# Default list of expected feature names (must match training order)
+DEFAULT_MODEL_FEATURES = [
+    'V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', 'V9', 'V10',
+    'V11', 'V12', 'V13', 'V14', 'V15', 'V16', 'V17', 'V18', 'V19', 'V20',
+    'V21', 'V22', 'V23', 'V24', 'V25', 'V26', 'V27', 'V28',
+    'Amount_Scaled', 'Time_Scaled'
+]
 
-# --- Load Model and Scalers ---
+# Global variables (will be populated during lifespan startup)
 model = None
 scaler_amount = None
 scaler_time = None
+MODEL_FEATURES = None
 
-@app.on_event("startup")
-async def load_artifacts():
-    """Loads the trained model and scalers when the FastAPI application starts."""
-    global model, scaler_amount, scaler_time
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Handles startup and shutdown events for the FastAPI application.
+    Loads the trained model and scalers during startup.
+    """
+    global model, scaler_amount, scaler_time, MODEL_FEATURES
+    print("DEBUG (Lifespan Startup): Attempting to load ML artifacts...")
+
+    # Explicitly check if files exist - CRITICAL DEBUGGING STEP
+    if not os.path.exists(MODEL_PATH):
+        print(f"ERROR (Lifespan Startup): Model file not found at: {MODEL_PATH}")
+        raise FileNotFoundError(f"Model file not found at: {MODEL_PATH}")
+    if not os.path.exists(SCALER_AMOUNT_PATH):
+        print(f"ERROR (Lifespan Startup): Amount scaler file not found at: {SCALER_AMOUNT_PATH}")
+        raise FileNotFoundError(f"Amount scaler file not found at: {SCALER_AMOUNT_PATH}")
+    if not os.path.exists(SCALER_TIME_PATH):
+        print(f"ERROR (Lifespan Startup): Time scaler file not found at: {SCALER_TIME_PATH}")
+        raise FileNotFoundError(f"Time scaler file not found at: {SCALER_TIME_PATH}")
+
     try:
         model = joblib.load(MODEL_PATH)
         scaler_amount = joblib.load(SCALER_AMOUNT_PATH)
         scaler_time = joblib.load(SCALER_TIME_PATH)
-        print("Model and scalers loaded successfully!")
-    except Exception as e:
-        print(f"Error loading model or scalers: {e}")
-        print(f"Expected model path: {MODEL_PATH}")
-        print(f"Expected amount scaler path: {SCALER_AMOUNT_PATH}")
-        print(f"Expected time scaler path: {SCALER_TIME_PATH}")
-        # In a real production app, you might want to raise an exception here
-        # to prevent the app from starting if models can't be loaded.
-        raise HTTPException(status_code=500, detail="Failed to load ML artifacts.")
 
+        if hasattr(model, 'feature_names_in_'):
+            MODEL_FEATURES = model.feature_names_in_.tolist()
+            print(f"DEBUG (Lifespan Startup): Model expects features in this order: {MODEL_FEATURES}")
+        else:
+            print("Warning: Model does not have 'feature_names_in_'. Using hardcoded feature names as fallback.")
+            MODEL_FEATURES = DEFAULT_MODEL_FEATURES
+            print(f"DEBUG (Lifespan Startup): Falling back to assumed features: {MODEL_FEATURES}")
+
+        print(f"DEBUG (Lifespan Startup): MODEL_FEATURES is: {MODEL_FEATURES}")
+        print("DEBUG (Lifespan Startup): Model and scalers loaded successfully!")
+        yield # Application startup is complete, now handle requests
+
+    except Exception as e:
+        print(f"ERROR (Lifespan Startup): Error during artifact loading: {e}")
+        # Re-raise the exception or capture it to prevent the server from starting incorrectly
+        raise HTTPException(status_code=500, detail=f"Failed to load ML artifacts during startup: {e}.")
+
+    finally:
+        # Optional: Clean up resources on shutdown (e.g., close database connections)
+        print("DEBUG (Lifespan Shutdown): Application shutdown completed.")
+
+# Initialize the FastAPI app with the lifespan context manager
+app = FastAPI(
+    title="Credit Card Fraud Detection API",
+    description="A FastAPI endpoint for predicting credit card fraud using a pre-trained Random Forest model.",
+    version="1.0.0",
+    lifespan=lifespan # THIS IS THE KEY CHANGE for FastAPI app initialization
+)
 
 # --- Define Input Data Schema using Pydantic ---
-# This automatically provides validation and generates API documentation
 class TransactionInput(BaseModel):
     Time: float = Field(..., example=123.45, description="Transaction time in seconds since first transaction")
     V1: float = Field(..., example=-0.966, description="PCA transformed feature V1")
@@ -85,8 +117,6 @@ class TransactionInput(BaseModel):
     Amount: float = Field(..., example=123.45, description="Transaction amount")
 
     class Config:
-        # This config enables parsing data from ORM models (e.g., SQLAlchemy)
-        # but is good practice to include for general purpose BaseModels
         from_attributes = True
         json_schema_extra = {
             "example": {
@@ -107,8 +137,15 @@ async def predict_fraud(transactions: Union[TransactionInput, List[TransactionIn
     """
     Receives one or more transaction records and predicts if they are fraudulent.
     """
-    if model is None or scaler_amount is None or scaler_time is None:
-        raise HTTPException(status_code=500, detail="ML artifacts not loaded. Server startup failed.")
+    global model, scaler_amount, scaler_time, MODEL_FEATURES
+
+    # NEW DEBUG PRINT: What is MODEL_FEATURES right at the start of predict_fraud?
+    print(f"DEBUG (Predict Entry): MODEL_FEATURES at start of predict: {MODEL_FEATURES}")
+
+    if model is None or scaler_amount is None or scaler_time is None or MODEL_FEATURES is None:
+        error_detail = "ML artifacts not fully loaded or feature names missing. Server startup failed."
+        print(f"ERROR (Predict Check): {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
     # Convert single input to a list for consistent processing
     if not isinstance(transactions, list):
@@ -118,44 +155,40 @@ async def predict_fraud(transactions: Union[TransactionInput, List[TransactionIn
     input_data_list = [t.model_dump() for t in transactions]
     input_df = pd.DataFrame(input_data_list)
 
-    # --- Preprocessing Steps (Must match training preprocessing) ---
-    # 1. Scale 'Amount' and 'Time' using the loaded scalers
-    #    Ensure reshape(-1, 1) for single feature scaling
-    input_df['Amount_Scaled'] = scaler_amount.transform(input_df['Amount'].values.reshape(-1, 1))
-    input_df['Time_Scaled'] = scaler_time.transform(input_df['Time'].values.reshape(-1, 1))
+    try:
+        # --- Preprocessing Steps (Must match training preprocessing) ---
+        input_df['Amount_Scaled'] = scaler_amount.transform(input_df['Amount'].values.reshape(-1, 1))
+        input_df['Time_Scaled'] = scaler_time.transform(input_df['Time'].values.reshape(-1, 1))
 
-    # 2. Drop original 'Time' and 'Amount' columns
-    input_df = input_df.drop(['Time', 'Amount'], axis=1)
+        input_df = input_df.drop(['Time', 'Amount'], axis=1)
 
-    # 3. Ensure column order matches X_train
-    # This is CRITICAL for model inference. The order of V1-V28, Amount_Scaled, Time_Scaled must match.
-    # It's best practice to save the exact column order from X_train during training.
-    # For this dataset, after the above steps, the columns should naturally be in the order V1..V28, Amount_Scaled, Time_Scaled
-    # If you were to add/remove columns, you'd need to explicitly reorder.
-    # Our X_train columns after scaling were roughly ['V1', 'V2', ..., 'V28', 'Amount_Scaled', 'Time_Scaled']
-    # Let's assume this order based on the initial PCA features and added scaled features.
+        # CRITICAL: Ensure column order matches the model's expected features
+        input_df = input_df[MODEL_FEATURES]
 
-    # --- Make Prediction ---
-    # Get probability of fraud (class 1)
-    fraud_probabilities = model.predict_proba(input_df)[:, 1]
+        # --- Make Prediction ---
+        fraud_probabilities = model.predict_proba(input_df)[:, 1]
 
-    # Apply the optimal threshold to get binary prediction
-    binary_predictions = (fraud_probabilities >= OPTIMAL_THRESHOLD).astype(int)
+        binary_predictions = (fraud_probabilities >= OPTIMAL_THRESHOLD).astype(int)
 
-    results = []
-    for i in range(len(input_data_list)):
-        results.append({
-            'transaction_index': i, # Useful for multi-record requests
-            'prediction_probability': float(fraud_probabilities[i]),
-            'predicted_class': int(binary_predictions[i]),
-            'is_fraud': bool(binary_predictions[i]) # Return as boolean for clarity
-        })
+        results = []
+        for i in range(len(input_data_list)):
+            results.append({
+                'transaction_index': i,
+                'prediction_probability': float(fraud_probabilities[i]),
+                'predicted_class': int(binary_predictions[i]),
+                'is_fraud': bool(binary_predictions[i])
+            })
 
-    # If the original input was a single transaction, return a single result
-    if len(results) == 1 and not isinstance(transactions, list):
-        return results[0]
-    else:
-        return results
+        if len(results) == 1 and not isinstance(transactions, list):
+            return results[0]
+        else:
+            return results
+    except KeyError as e:
+        print(f"ERROR (Predict): Missing expected feature(s) for prediction: {e}")
+        raise HTTPException(status_code=400, detail=f"Missing expected feature(s) for prediction: {e}. Ensure all V1-V28, Amount, Time are provided and correctly named.")
+    except Exception as e:
+        print(f"ERROR (Predict): Prediction failed due to an internal server error: {e}")
+        raise HTTPException(status_code=500, detail=f"Prediction failed due to an internal server error: {e}")
 
 # --- Basic Root Endpoint ---
 @app.get('/')
