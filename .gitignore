@@ -1,0 +1,20 @@
+# .gitignore
+# Virtual environment
+venv/
+
+# Python specific
+__pycache__/
+*.pyc
+*.log
+*.env
+
+# Editor specific
+.vscode/ # VS Code settings specific to you
+.DS_Store # macOS specific
+
+# Data & Models (Do NOT commit large files or sensitive data!)
+data/raw/
+data/processed/
+models/development/
+*.pkl # Be selective about which .pkl files to commit if many
+*.h5
