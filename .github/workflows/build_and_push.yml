@@ -31,6 +31,23 @@ jobs:
         run: |
           pytest -v tests/integration/test_api.py
 
+      # Temporary debugging step
+      - name: Check ACR credentials
+        run: |
+          if [ -z "${{ secrets.AZURE_CREDENTIALS.clientId }}" ]; then
+            echo "Error: ACR username (clientId) is empty."
+            exit 1
+          else
+            echo "ACR username (clientId) is present."
+          fi
+
+          if [ -z "${{ secrets.AZURE_CREDENTIALS.clientSecret }}" ]; then
+            echo "Error: ACR password (clientSecret) is empty."
+            exit 1
+          else
+            echo "ACR password (clientSecret) is present."
+          fi
+
       - name: Azure login
         uses: azure/login@v1
         with:
