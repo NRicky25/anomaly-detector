@@ -53,3 +53,11 @@ jobs:
           context: .
           push: true
           tags: ricky2509acr.azurecr.io/anomaly-detector-api:latest
+
+      - name: Deploy to Azure Container Apps
+        uses: azure/container-apps-deploy-action@v1
+        with:
+          acrName: ricky2509acr
+          containerAppName: anomaly-detector-api-service
+          resourceGroup: AnomalyDetectorRG
+          imageToDeploy: ricky2509acr.azurecr.io/anomaly-detector-api:latest
