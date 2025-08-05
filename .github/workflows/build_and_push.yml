@@ -67,3 +67,5 @@ jobs:
           containerAppName: anomaly-detector-api-service
           resourceGroup: AnomalyDetectorRG
           imageToDeploy: ricky2509acr.azurecr.io/anomaly-detector-api:latest
+          acrUsername: ${{ env.ACR_USERNAME }}
+          acrPassword: ${{ env.ACR_PASSWORD }}
