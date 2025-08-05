@@ -1,3 +1,13 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
 jobs:
   build_and_test:
     runs-on: ubuntu-latest
@@ -22,7 +32,11 @@ jobs:
           pytest -v tests/integration/test_api.py
 
       # Azure Login and Docker Push Steps (replacing the old Docker Hub steps)
-      # You can remove the 'Azure login' step to avoid the error.
+      # - name: Azure login
+      #   uses: azure/login@v1
+      #   with:
+      #     username: ${{ secrets.ACR_USERNAME }}
+      #     password: ${{ secrets.ACR_PASSWORD }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
