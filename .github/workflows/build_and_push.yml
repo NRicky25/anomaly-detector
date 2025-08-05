@@ -25,24 +25,31 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest # Install pytest for testing
-          pip install uvicorn # Ensure uvicorn is available if needed by tests/fixtures
-          pip install python-multipart # Usually needed by FastAPI when handling requests
+          pip install pytest uvicorn python-multipart
 
       - name: Run tests
         run: |
           pytest -v tests/integration/test_api.py
 
-      # Optional: Build Docker image only if tests pass
-      - name: Log in to Docker Hub (or other registry)
+      # Azure Login and Docker Push Steps (replacing the old Docker Hub steps)
+      - name: Azure login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Azure Container Registry
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          registry: ricky2509acr.azurecr.io
+          username: ${{ secrets.AZURE_CREDENTIALS.clientId }}
+          password: ${{ secrets.AZURE_CREDENTIALS.clientSecret }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ricky2509/anomaly-detector-api:latest
+          tags: ricky2509acr.azurecr.io/anomaly-detector-api:latest
