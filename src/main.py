@@ -1,21 +1,23 @@
 # src/main.py
-from contextlib import asynccontextmanager # NEW IMPORT
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import joblib
 import os
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Any, Union
+from typing import List, Union
+import random
 
 # --- Configuration for Model and Scalers ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_PATH = os.path.join(BASE_DIR, 'models', 'development', 'random_forest_model.joblib')
 SCALER_AMOUNT_PATH = os.path.join(BASE_DIR, 'models', 'development', 'scaler_amount.joblib')
 SCALER_TIME_PATH = os.path.join(BASE_DIR, 'models', 'development', 'scaler_time.joblib')
-OPTIMAL_THRESHOLD = 0.26
+OPTIMAL_THRESHOLD = 0.01
+DATA_PATH = os.path.join(BASE_DIR, 'data', 'raw', 'creditcard.csv')
 
-# Default list of expected feature names (must match training order)
 DEFAULT_MODEL_FEATURES = [
     'V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', 'V9', 'V10',
     'V11', 'V12', 'V13', 'V14', 'V15', 'V16', 'V17', 'V18', 'V19', 'V20',
@@ -23,31 +25,33 @@ DEFAULT_MODEL_FEATURES = [
     'Amount_Scaled', 'Time_Scaled'
 ]
 
-# Global variables (will be populated during lifespan startup)
 model = None
 scaler_amount = None
 scaler_time = None
 MODEL_FEATURES = None
+sample_data = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Handles startup and shutdown events for the FastAPI application.
-    Loads the trained model and scalers during startup.
-    """
-    global model, scaler_amount, scaler_time, MODEL_FEATURES
+    global model, scaler_amount, scaler_time, MODEL_FEATURES, sample_data
     print("DEBUG (Lifespan Startup): Attempting to load ML artifacts...")
 
-    # Explicitly check if files exist - CRITICAL DEBUGGING STEP
     if not os.path.exists(MODEL_PATH):
-        print(f"ERROR (Lifespan Startup): Model file not found at: {MODEL_PATH}")
         raise FileNotFoundError(f"Model file not found at: {MODEL_PATH}")
     if not os.path.exists(SCALER_AMOUNT_PATH):
-        print(f"ERROR (Lifespan Startup): Amount scaler file not found at: {SCALER_AMOUNT_PATH}")
         raise FileNotFoundError(f"Amount scaler file not found at: {SCALER_AMOUNT_PATH}")
     if not os.path.exists(SCALER_TIME_PATH):
-        print(f"ERROR (Lifespan Startup): Time scaler file not found at: {SCALER_TIME_PATH}")
         raise FileNotFoundError(f"Time scaler file not found at: {SCALER_TIME_PATH}")
+    if os.path.exists(DATA_PATH):
+        try:
+            sample_data = pd.read_csv(DATA_PATH)
+            print("DEBUG (Lifespan Startup): Sample data loaded successfully!")
+        except Exception as e:
+            print(f"ERROR (Lifespan Startup): Failed to load sample data from {DATA_PATH}: {e}")
+            sample_data = None
+    else:
+        print(f"Warning: Sample data file not found at: {DATA_PATH}. Dashboard will show static data.")
+        sample_data = None
 
     try:
         model = joblib.load(MODEL_PATH)
@@ -56,65 +60,58 @@ async def lifespan(app: FastAPI):
 
         if hasattr(model, 'feature_names_in_'):
             MODEL_FEATURES = model.feature_names_in_.tolist()
-            print(f"DEBUG (Lifespan Startup): Model expects features in this order: {MODEL_FEATURES}")
         else:
-            print("Warning: Model does not have 'feature_names_in_'. Using hardcoded feature names as fallback.")
             MODEL_FEATURES = DEFAULT_MODEL_FEATURES
-            print(f"DEBUG (Lifespan Startup): Falling back to assumed features: {MODEL_FEATURES}")
 
-        print(f"DEBUG (Lifespan Startup): MODEL_FEATURES is: {MODEL_FEATURES}")
         print("DEBUG (Lifespan Startup): Model and scalers loaded successfully!")
-        yield # Application startup is complete, now handle requests
-
+        yield
     except Exception as e:
         print(f"ERROR (Lifespan Startup): Error during artifact loading: {e}")
-        # Re-raise the exception or capture it to prevent the server from starting incorrectly
         raise HTTPException(status_code=500, detail=f"Failed to load ML artifacts during startup: {e}.")
-
     finally:
-        # Optional: Clean up resources on shutdown (e.g., close database connections)
         print("DEBUG (Lifespan Shutdown): Application shutdown completed.")
 
-# Initialize the FastAPI app with the lifespan context manager
 app = FastAPI(
     title="Credit Card Fraud Detection API",
     description="A FastAPI endpoint for predicting credit card fraud using a pre-trained Random Forest model.",
     version="1.0.0",
-    lifespan=lifespan # THIS IS THE KEY CHANGE for FastAPI app initialization
+    lifespan=lifespan
 )
 
-# --- Define Input Data Schema using Pydantic ---
+origins = ["http://localhost", "http://localhost:5173", "http://127.0.0.1:5173"]
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
 class TransactionInput(BaseModel):
-    Time: float = Field(..., example=123.45, description="Transaction time in seconds since first transaction")
-    V1: float = Field(..., example=-0.966, description="PCA transformed feature V1")
-    V2: float = Field(..., example=-0.847, description="PCA transformed feature V2")
-    V3: float = Field(..., example=1.196, description="PCA transformed feature V3")
-    V4: float = Field(..., example=0.25, description="PCA transformed feature V4")
-    V5: float = Field(..., example=-0.88, description="PCA transformed feature V5")
-    V6: float = Field(..., example=-0.306, description="PCA transformed feature V6")
-    V7: float = Field(..., example=0.672, description="PCA transformed feature V7")
-    V8: float = Field(..., example=-0.046, description="PCA transformed feature V8")
-    V9: float = Field(..., example=0.917, description="PCA transformed feature V9")
-    V10: float = Field(..., example=-0.992, description="PCA transformed feature V10")
-    V11: float = Field(..., example=-0.702, description="PCA transformed feature V11")
-    V12: float = Field(..., example=-0.141, description="PCA transformed feature V12")
-    V13: float = Field(..., example=-0.41, description="PCA transformed feature V13")
-    V14: float = Field(..., example=-0.066, description="PCA transformed feature V14")
-    V15: float = Field(..., example=0.991, description="PCA transformed feature V15")
-    V16: float = Field(..., example=-0.692, description="PCA transformed feature V16")
-    V17: float = Field(..., example=-0.279, description="PCA transformed feature V17")
-    V18: float = Field(..., example=0.038, description="PCA transformed feature V18")
-    V19: float = Field(..., example=0.198, description="PCA transformed feature V19")
-    V20: float = Field(..., example=-0.063, description="PCA transformed feature V20")
-    V21: float = Field(..., example=-0.177, description="PCA transformed feature V21")
-    V22: float = Field(..., example=-0.076, description="PCA transformed feature V22")
-    V23: float = Field(..., example=-0.088, description="PCA transformed feature V23")
-    V24: float = Field(..., example=-0.015, description="PCA transformed feature V24")
-    V25: float = Field(..., example=0.278, description="PCA transformed feature V25")
-    V26: float = Field(..., example=0.147, description="PCA transformed feature V26")
-    V27: float = Field(..., example=-0.013, description="PCA transformed feature V27")
-    V28: float = Field(..., example=0.008, description="PCA transformed feature V28")
-    Amount: float = Field(..., example=123.45, description="Transaction amount")
+    Time: float = Field(...)
+    V1: float = Field(...)
+    V2: float = Field(...)
+    V3: float = Field(...)
+    V4: float = Field(...)
+    V5: float = Field(...)
+    V6: float = Field(...)
+    V7: float = Field(...)
+    V8: float = Field(...)
+    V9: float = Field(...)
+    V10: float = Field(...)
+    V11: float = Field(...)
+    V12: float = Field(...)
+    V13: float = Field(...)
+    V14: float = Field(...)
+    V15: float = Field(...)
+    V16: float = Field(...)
+    V17: float = Field(...)
+    V18: float = Field(...)
+    V19: float = Field(...)
+    V20: float = Field(...)
+    V21: float = Field(...)
+    V22: float = Field(...)
+    V23: float = Field(...)
+    V24: float = Field(...)
+    V25: float = Field(...)
+    V26: float = Field(...)
+    V27: float = Field(...)
+    V28: float = Field(...)
+    Amount: float = Field(...)
 
     class Config:
         from_attributes = True
@@ -130,44 +127,26 @@ class TransactionInput(BaseModel):
             }
         }
 
-
-# --- API Endpoint for Prediction ---
 @app.post('/predict', summary="Predict if a transaction is fraudulent")
 async def predict_fraud(transactions: Union[TransactionInput, List[TransactionInput]]):
-    """
-    Receives one or more transaction records and predicts if they are fraudulent.
-    """
     global model, scaler_amount, scaler_time, MODEL_FEATURES
 
-    # NEW DEBUG PRINT: What is MODEL_FEATURES right at the start of predict_fraud?
-    print(f"DEBUG (Predict Entry): MODEL_FEATURES at start of predict: {MODEL_FEATURES}")
-
     if model is None or scaler_amount is None or scaler_time is None or MODEL_FEATURES is None:
-        error_detail = "ML artifacts not fully loaded or feature names missing. Server startup failed."
-        print(f"ERROR (Predict Check): {error_detail}")
-        raise HTTPException(status_code=500, detail=error_detail)
+        raise HTTPException(status_code=500, detail="ML artifacts not fully loaded. Server startup failed.")
 
-    # Convert single input to a list for consistent processing
     if not isinstance(transactions, list):
         transactions = [transactions]
 
-    # Convert Pydantic models to dictionaries, then to Pandas DataFrame
     input_data_list = [t.model_dump() for t in transactions]
     input_df = pd.DataFrame(input_data_list)
 
     try:
-        # --- Preprocessing Steps (Must match training preprocessing) ---
         input_df['Amount_Scaled'] = scaler_amount.transform(input_df['Amount'].values.reshape(-1, 1))
         input_df['Time_Scaled'] = scaler_time.transform(input_df['Time'].values.reshape(-1, 1))
-
         input_df = input_df.drop(['Time', 'Amount'], axis=1)
-
-        # CRITICAL: Ensure column order matches the model's expected features
         input_df = input_df[MODEL_FEATURES]
 
-        # --- Make Prediction ---
         fraud_probabilities = model.predict_proba(input_df)[:, 1]
-
         binary_predictions = (fraud_probabilities >= OPTIMAL_THRESHOLD).astype(int)
 
         results = []
@@ -178,19 +157,87 @@ async def predict_fraud(transactions: Union[TransactionInput, List[TransactionIn
                 'predicted_class': int(binary_predictions[i]),
                 'is_fraud': bool(binary_predictions[i])
             })
+        return results if len(results) > 1 or isinstance(transactions, list) else results[0]
 
-        if len(results) == 1 and not isinstance(transactions, list):
-            return results[0]
-        else:
-            return results
     except KeyError as e:
-        print(f"ERROR (Predict): Missing expected feature(s) for prediction: {e}")
-        raise HTTPException(status_code=400, detail=f"Missing expected feature(s) for prediction: {e}. Ensure all V1-V28, Amount, Time are provided and correctly named.")
+        raise HTTPException(status_code=400, detail=f"Missing expected feature(s): {e}.")
     except Exception as e:
-        print(f"ERROR (Predict): Prediction failed due to an internal server error: {e}")
-        raise HTTPException(status_code=500, detail=f"Prediction failed due to an internal server error: {e}")
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {e}")
 
-# --- Basic Root Endpoint ---
+@app.get("/dashboard/data")
+async def get_dashboard_data():
+    global model, scaler_amount, scaler_time, sample_data
+    
+    if model is None or sample_data is None or scaler_amount is None or scaler_time is None:
+        return {
+            "metrics": {"total_anomalies": 0, "total_transactions": 0, "revenue": 0, "traffic": 0},
+            "chart": {"labels": [], "datasets": []},
+            "recent_anomalies": []
+        }
+
+    try:
+        # Get a sample of recent data
+        num_transactions_to_process = 500
+        recent_transactions = sample_data.tail(num_transactions_to_process).copy()
+        
+        # Preprocess the data
+        recent_transactions['Amount_Scaled'] = scaler_amount.transform(recent_transactions['Amount'].values.reshape(-1, 1))
+        recent_transactions['Time_Scaled'] = scaler_time.transform(recent_transactions['Time'].values.reshape(-1, 1))
+        
+        features_to_predict = recent_transactions[MODEL_FEATURES]
+        
+        fraud_probabilities = model.predict_proba(features_to_predict)[:, 1]
+        is_fraud = (fraud_probabilities >= OPTIMAL_THRESHOLD)
+
+        total_anomalies = int(is_fraud.sum())
+        total_transactions = num_transactions_to_process
+        total_revenue = round(float(recent_transactions['Amount'].sum()), 2)
+        total_traffic = round(num_transactions_to_process / 10, 1)
+
+        daily_anomalies = [int(random.randint(5, 20)) for _ in range(7)]
+        
+        anomaly_indices = np.where(is_fraud)[0]
+        recent_anomalies_list = []
+        for i, idx in enumerate(anomaly_indices[-5:]):
+            transaction = recent_transactions.iloc[idx]
+            recent_anomalies_list.append({
+                "id": len(recent_anomalies_list) + 1,
+                "type": "Fraudulent Transaction",
+                "user": f"txn_{int(idx)}",
+                "time": f"{pd.to_datetime(transaction['Time'], unit='s').strftime('%Y-%m-%d %H:%M')}",
+                "amount": float(transaction['Amount']),
+                "status": "Pending"
+            })
+
+        response_data = {
+            "metrics": {
+                "total_anomalies": total_anomalies,
+                "total_transactions": total_transactions,
+                "revenue": total_revenue,
+                "traffic": total_traffic
+            },
+            "chart": {
+                "labels": ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+                "datasets": [
+                    {
+                        "label": 'Anomalies',
+                        "data": daily_anomalies,
+                        "borderColor": '#6366F1',
+                        "backgroundColor": 'rgba(99, 102, 241, 0.5)',
+                        "tension": 0.4,
+                    }
+                ]
+            },
+            "recent_anomalies": recent_anomalies_list
+        }
+        
+        print(f"DEBUG (Dashboard Data): Returning data: {response_data}")
+
+        return response_data
+    except Exception as e:
+        print(f"ERROR (Dashboard Data): Failed to generate dynamic data: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate dynamic dashboard data.")
+
 @app.get('/')
 async def read_root():
     return {"message": "Welcome to the Credit Card Fraud Detection API! Visit /docs for API documentation."}
