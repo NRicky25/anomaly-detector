@@ -1,13 +1,10 @@
 # Use a lightweight official Python image as the base
-FROM python:3.10-buster
+FROM python:3.10-slim-bullseye
 
 # Set the working directory in the container
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3-dev \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3-dev gcc && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements.txt first to leverage Docker cache
 # This installs dependencies before copying the rest of the code,
