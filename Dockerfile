@@ -4,6 +4,11 @@ FROM python:3.10-slim-buster
 # Set the working directory in the container
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy requirements.txt first to leverage Docker cache
 # This installs dependencies before copying the rest of the code,
 # so if only code changes, dependencies don't need to be reinstalled.
