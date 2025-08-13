@@ -1,8 +1,9 @@
 # src/main.py
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, UploadFile, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from io import StringIO
 import joblib
 import os
 import pandas as pd
@@ -126,6 +127,77 @@ class TransactionInput(BaseModel):
                 "V26": 0.147, "V27": -0.013, "V28": 0.008, "Amount": 50.0
             }
         }
+
+# File upload endpoint
+@app.post('/upload', summary="Upload a CSV file for prediction")
+async def upload_file(file: UploadFile = File(...)):
+    global model, scaler_amount, scaler_time, MODEL_FEATURES
+    
+    if not model or not scaler_amount or not scaler_time:
+        raise HTTPException(status_code=500, detail="ML artifacts not loaded.")
+    
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Invalid file type. Only CSV files are accepted.")
+
+    try:
+        content = await file.read()
+        csv_data = StringIO(content.decode('utf-8'))
+        input_df = pd.read_csv(csv_data)
+
+        input_df = input_df.fillna(0)
+        original_amounts = input_df['Amount'].values
+        # Preprocessing and scaling
+        input_df['Amount_Scaled'] = scaler_amount.transform(input_df['Amount'].values.reshape(-1, 1))
+        input_df['Time_Scaled'] = scaler_time.transform(input_df['Time'].values.reshape(-1, 1))
+        input_df = input_df.drop(['Time', 'Amount'], axis=1)
+
+        # Check for missing features
+        if not all(feature in input_df.columns for feature in MODEL_FEATURES):
+            missing_features = [f for f in MODEL_FEATURES if f not in input_df.columns]
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Input file is missing required features: {', '.join(missing_features)}."
+            )
+
+        input_df = input_df[MODEL_FEATURES]
+
+        # Model prediction
+        fraud_probabilities = model.predict_proba(input_df)[:, 1]
+        binary_predictions = (fraud_probabilities >= OPTIMAL_THRESHOLD).astype(int)
+
+        #Calculate
+        
+        is_fraud_mask = binary_predictions.astype(bool)
+        total_transactions = len(input_df)
+        fraud_count = int(is_fraud_mask.sum())
+        non_fraud_count = total_transactions - fraud_count
+        total_fraud_amount = float(original_amounts[is_fraud_mask].sum())
+
+        summary = {
+            'totalTransactions': total_transactions,
+            'fraudCount': fraud_count,
+            'nonFraudCount': non_fraud_count,
+            'totalFraudAmount': round(total_fraud_amount, 2)
+        }
+
+        # Format and return the results
+        results = []
+        for i in range(len(input_df)):
+            results.append({
+                'id': i,
+                'probability': float(fraud_probabilities[i]),
+                'is_fraud': bool(binary_predictions[i])
+            })
+
+        return {"filename": file.filename, 
+            "message": "File processed successfully.", 
+            "results": results,
+            "summary": summary}
+
+    except Exception as e:
+        print(f"ERROR (Upload): Failed to process file: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to process file: {e}")
+
 
 @app.post('/predict', summary="Predict if a transaction is fraudulent")
 async def predict_fraud(transactions: Union[TransactionInput, List[TransactionInput]]):
