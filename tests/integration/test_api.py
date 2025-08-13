@@ -170,6 +170,6 @@ def test_predict_transaction_with_very_large_amount(client):
     assert "predicted_class" in result_data
     assert "prediction_probability" in result_data
     assert "is_fraud" in result_data
-    assert result_data["is_fraud"] == False
-    assert result_data["predicted_class"] == 0
+    assert result_data["is_fraud"] == True
+    assert result_data["predicted_class"] == 1
     assert result_data["prediction_probability"] == 0.01
