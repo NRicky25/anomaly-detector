@@ -1,14 +1,14 @@
-# src/main.py
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, File, UploadFile, Depends
+from fastapi import FastAPI, HTTPException, File, UploadFile, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from io import StringIO
 import joblib
 import os
 import pandas as pd
 import numpy as np
-from typing import List, Union
+from typing import List, Union, Optional
 import random
 
 # --- Configuration for Model and Scalers ---
@@ -127,8 +127,82 @@ class TransactionInput(BaseModel):
                 "V26": 0.147, "V27": -0.013, "V28": 0.008, "Amount": 50.0
             }
         }
+@app.get("/")
+async def read_root():
+    return {"message": "Welcome to the Credit Card Fraud Detection API! Visit /docs for API documentation."}
 
-# File upload endpoint
+# --- NEW: Reports endpoint with filtering, sorting, and pagination ---
+@app.get("/reports/transactions", summary="Get a paginated, filterable list of all transactions.")
+def get_reports(
+    page: int = Query(1, ge=1, description="Page number to retrieve."),
+    page_size: int = Query(50, ge=1, le=100, description="Number of transactions per page."),
+    sort_by: Optional[str] = Query("Time", regex="^(Time|Amount|probability)$", description="Field to sort by."),
+    sort_order: Optional[str] = Query("desc", regex="^(asc|desc)$", description="Sort order: 'asc' or 'desc'."),
+    min_amount: Optional[float] = Query(None, ge=0, description="Minimum transaction amount."),
+    max_amount: Optional[float] = Query(None, ge=0, description="Maximum transaction amount."),
+    is_fraud: Optional[bool] = Query(None, description="Filter by fraud status (True/False)."),
+    download: Optional[bool] = Query(False, description="Set to True to download a CSV file.")
+):
+    global sample_data, model, scaler_amount, scaler_time, MODEL_FEATURES
+
+    if sample_data is None or model is None or scaler_amount is None or scaler_time is None:
+        raise HTTPException(status_code=500, detail="Data or model not loaded.")
+
+    try:
+        # Create a copy to avoid modifying the original data
+        reports_df = sample_data.copy()
+
+        # Add the fraud predictions to the DataFrame
+        reports_df['Amount_Scaled'] = scaler_amount.transform(reports_df['Amount'].values.reshape(-1, 1))
+        reports_df['Time_Scaled'] = scaler_time.transform(reports_df['Time'].values.reshape(-1, 1))
+        
+        features_to_predict = reports_df[MODEL_FEATURES]
+        fraud_probabilities = model.predict_proba(features_to_predict)[:, 1]
+        reports_df['probability'] = fraud_probabilities
+        reports_df['is_fraud'] = (reports_df['probability'] >= OPTIMAL_THRESHOLD)
+
+        # --- Filtering logic ---
+        if min_amount is not None:
+            reports_df = reports_df[reports_df['Amount'] >= min_amount]
+        if max_amount is not None:
+            reports_df = reports_df[reports_df['Amount'] <= max_amount]
+        if is_fraud is not None:
+            reports_df = reports_df[reports_df['is_fraud'] == is_fraud]
+
+        # --- Sorting logic ---
+        ascending = sort_order == "asc"
+        reports_df = reports_df.sort_values(by=sort_by, ascending=ascending)
+
+        # --- Download logic ---
+        if download:
+            reports_df = reports_df.drop(columns=['Amount_Scaled', 'Time_Scaled'])
+            stream = StringIO()
+            reports_df.to_csv(stream, index=False)
+            response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
+            response.headers["Content-Disposition"] = "attachment; filename=fraud_report.csv"
+            return response
+
+        # --- Pagination logic ---
+        total_count = len(reports_df)
+        start = (page - 1) * page_size
+        end = start + page_size
+        paginated_df = reports_df.iloc[start:end]
+
+        # Format and return the paginated results
+        response_data = {
+            "total_count": total_count,
+            "page": page,
+            "page_size": page_size,
+            "transactions": paginated_df.to_dict(orient="records")
+        }
+
+        return JSONResponse(content=response_data)
+    
+    except Exception as e:
+        print(f"ERROR (Reports): Failed to generate report: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate report: {e}")
+
+
 @app.post('/upload', summary="Upload a CSV file for prediction")
 async def upload_file(file: UploadFile = File(...)):
     global model, scaler_amount, scaler_time, MODEL_FEATURES
@@ -146,27 +220,24 @@ async def upload_file(file: UploadFile = File(...)):
 
         input_df = input_df.fillna(0)
         original_amounts = input_df['Amount'].values
-        # Preprocessing and scaling
-        input_df['Amount_Scaled'] = scaler_amount.transform(input_df['Amount'].values.reshape(-1, 1))
+
+        input_df['Amount_Scaled'] = scaler_amount.transform(original_amounts.reshape(-1, 1))
         input_df['Time_Scaled'] = scaler_time.transform(input_df['Time'].values.reshape(-1, 1))
-        input_df = input_df.drop(['Time', 'Amount'], axis=1)
-
-        # Check for missing features
+        
+        # Check for missing features before dropping
         if not all(feature in input_df.columns for feature in MODEL_FEATURES):
-            missing_features = [f for f in MODEL_FEATURES if f not in input_df.columns]
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Input file is missing required features: {', '.join(missing_features)}."
-            )
-
+             missing_features = [f for f in MODEL_FEATURES if f not in input_df.columns]
+             raise HTTPException(
+                 status_code=400, 
+                 detail=f"Input file is missing required features: {', '.join(missing_features)}."
+             )
+        
+        input_df = input_df.drop(['Time', 'Amount'], axis=1)
         input_df = input_df[MODEL_FEATURES]
 
-        # Model prediction
         fraud_probabilities = model.predict_proba(input_df)[:, 1]
         binary_predictions = (fraud_probabilities >= OPTIMAL_THRESHOLD).astype(int)
 
-        #Calculate
-        
         is_fraud_mask = binary_predictions.astype(bool)
         total_transactions = len(input_df)
         fraud_count = int(is_fraud_mask.sum())
@@ -180,7 +251,6 @@ async def upload_file(file: UploadFile = File(...)):
             'totalFraudAmount': round(total_fraud_amount, 2)
         }
 
-        # Format and return the results
         results = []
         for i in range(len(input_df)):
             results.append({
@@ -190,13 +260,14 @@ async def upload_file(file: UploadFile = File(...)):
             })
 
         return {"filename": file.filename, 
-            "message": "File processed successfully.", 
-            "results": results,
-            "summary": summary}
+                "message": "File processed successfully.", 
+                "results": results,
+                "summary": summary}
 
     except Exception as e:
         print(f"ERROR (Upload): Failed to process file: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to process file: {e}")
+
 
 
 @app.post('/predict', summary="Predict if a transaction is fraudulent")
