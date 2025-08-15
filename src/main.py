@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 from typing import List, Union, Optional
 import random
+import datetime
 
 # --- Configuration for Model and Scalers ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -201,6 +202,58 @@ def get_reports(
     except Exception as e:
         print(f"ERROR (Reports): Failed to generate report: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate report: {e}")
+    
+# Analytics Endpoints
+@app.get("/analytics/trends", summary="Get historical trends for transactions and fraud rates.")
+def get_analytics_trends():
+    global sample_data, model, scaler_amount, scaler_time, MODEL_FEATURES
+
+    if sample_data is None or model is None or scaler_amount is None or scaler_time is None:
+        raise HTTPException(status_code=500, detail="Data or model not loaded.")
+
+    try:
+        analytics_df = sample_data.copy()
+        
+        # Add the fraud predictions
+        analytics_df['Amount_Scaled'] = scaler_amount.transform(analytics_df['Amount'].values.reshape(-1, 1))
+        analytics_df['Time_Scaled'] = scaler_time.transform(analytics_df['Time'].values.reshape(-1, 1))
+        features_to_predict = analytics_df[MODEL_FEATURES]
+        fraud_probabilities = model.predict_proba(features_to_predict)[:, 1]
+        analytics_df['is_fraud'] = (fraud_probabilities >= OPTIMAL_THRESHOLD)
+
+        # Convert 'Time' (seconds) to a proper datetime object
+        analytics_df['datetime'] = pd.to_datetime(analytics_df['Time'], unit='s')
+        analytics_df['date'] = analytics_df['datetime'].dt.date
+
+        # Calculate daily totals
+        daily_transactions = analytics_df.groupby('date').size().reset_index(name='count')
+        daily_fraud_count = analytics_df[analytics_df['is_fraud']].groupby('date').size().reset_index(name='fraud_count')
+        
+        # Merge to get fraud rate
+        daily_trends = pd.merge(daily_transactions, daily_fraud_count, on='date', how='left').fillna(0)
+        daily_trends['rate'] = daily_trends['fraud_count'] / daily_trends['count']
+
+        # Format for JSON response
+        daily_transactions_list = [{
+            "date": str(row['date']),
+            "count": int(row['count'])
+        } for index, row in daily_transactions.iterrows()]
+
+        daily_fraud_rate_list = [{
+            "date": str(row['date']),
+            "rate": float(row['rate'])
+        } for index, row in daily_trends.iterrows()]
+        
+        response_data = {
+            "daily_transactions": daily_transactions_list,
+            "daily_fraud_rate": daily_fraud_rate_list
+        }
+
+        return JSONResponse(content=response_data)
+    
+    except Exception as e:
+        print(f"ERROR (Analytics): Failed to generate analytics data: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate analytics data: {e}")
 
 
 @app.post('/upload', summary="Upload a CSV file for prediction")
