@@ -11,14 +11,36 @@ import numpy as np
 from typing import List, Union, Optional
 import random
 import datetime
+import json
+from pydantic import BaseModel
+from pathlib import Path
 
-# --- Configuration for Model and Scalers ---
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_PATH = os.path.join(BASE_DIR, 'models', 'development', 'random_forest_model.joblib')
-SCALER_AMOUNT_PATH = os.path.join(BASE_DIR, 'models', 'development', 'scaler_amount.joblib')
-SCALER_TIME_PATH = os.path.join(BASE_DIR, 'models', 'development', 'scaler_time.joblib')
-OPTIMAL_THRESHOLD = 0.01
-DATA_PATH = os.path.join(BASE_DIR, 'data', 'raw', 'creditcard.csv')
+
+
+#PATH
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+def get_path(*paths):
+    return BASE_DIR.joinpath(*paths)
+
+MODEL_PATH = get_path("models", "development", "random_forest_model.joblib")
+SCALER_AMOUNT_PATH = get_path("models", "development", "scaler_amount.joblib")
+SCALER_TIME_PATH = get_path("models", "development", "scaler_time.joblib")
+DATA_PATH = get_path("data", "raw", "creditcard.csv")
+SETTINGS_FILE = get_path("src", "settings.json")
+
+#GLOBALS
+OPTIMAL_THRESHOLD = None
+model = None
+scaler_amount = None
+scaler_time = None
+OPTIMAL_THRESHOLD = 0.1
+
+app = FastAPI()
+
+class SettingsUpdate(BaseModel):
+    optimal_threshold: float
+
 
 DEFAULT_MODEL_FEATURES = [
     'V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', 'V9', 'V10',
@@ -27,35 +49,34 @@ DEFAULT_MODEL_FEATURES = [
     'Amount_Scaled', 'Time_Scaled'
 ]
 
-model = None
-scaler_amount = None
-scaler_time = None
-MODEL_FEATURES = None
-sample_data = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global model, scaler_amount, scaler_time, MODEL_FEATURES, sample_data
+    global OPTIMAL_THRESHOLD, model, scaler_amount, scaler_time, MODEL_FEATURES, sample_data
     print("DEBUG (Lifespan Startup): Attempting to load ML artifacts...")
 
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(f"Model file not found at: {MODEL_PATH}")
-    if not os.path.exists(SCALER_AMOUNT_PATH):
-        raise FileNotFoundError(f"Amount scaler file not found at: {SCALER_AMOUNT_PATH}")
-    if not os.path.exists(SCALER_TIME_PATH):
-        raise FileNotFoundError(f"Time scaler file not found at: {SCALER_TIME_PATH}")
-    if os.path.exists(DATA_PATH):
+    # Load settings first to get the OPTIMAL_THRESHOLD
+    if SETTINGS_FILE.exists():
         try:
-            sample_data = pd.read_csv(DATA_PATH)
-            print("DEBUG (Lifespan Startup): Sample data loaded successfully!")
+            with open(SETTINGS_FILE, "r") as f:
+                settings_data = json.load(f)
+                OPTIMAL_THRESHOLD = settings_data.get("OPTIMAL_THRESHOLD", OPTIMAL_THRESHOLD)
+            print(f"DEBUG (Lifespan Startup): Initial OPTIMAL_THRESHOLD loaded: {OPTIMAL_THRESHOLD}")
         except Exception as e:
-            print(f"ERROR (Lifespan Startup): Failed to load sample data from {DATA_PATH}: {e}")
-            sample_data = None
+            print(f"ERROR (Lifespan Startup): Failed to load settings: {e}. Using default threshold.")
     else:
-        print(f"Warning: Sample data file not found at: {DATA_PATH}. Dashboard will show static data.")
-        sample_data = None
+        print(f"Warning: Settings file not found at {SETTINGS_FILE}. Using default threshold of {OPTIMAL_THRESHOLD}.")
 
+    # Load ML models and data
     try:
+        if not MODEL_PATH.exists():
+            raise FileNotFoundError(f"Model file not found at: {MODEL_PATH}")
+        if not SCALER_AMOUNT_PATH.exists():
+            raise FileNotFoundError(f"Amount scaler file not found at: {SCALER_AMOUNT_PATH}")
+        if not SCALER_TIME_PATH.exists():
+            raise FileNotFoundError(f"Time scaler file not found at: {SCALER_TIME_PATH}")
+
         model = joblib.load(MODEL_PATH)
         scaler_amount = joblib.load(SCALER_AMOUNT_PATH)
         scaler_time = joblib.load(SCALER_TIME_PATH)
@@ -64,8 +85,16 @@ async def lifespan(app: FastAPI):
             MODEL_FEATURES = model.feature_names_in_.tolist()
         else:
             MODEL_FEATURES = DEFAULT_MODEL_FEATURES
-
+        
         print("DEBUG (Lifespan Startup): Model and scalers loaded successfully!")
+
+        if DATA_PATH.exists():
+            sample_data = pd.read_csv(DATA_PATH)
+            print("DEBUG (Lifespan Startup): Sample data loaded successfully!")
+        else:
+            print(f"Warning: Sample data file not found at: {DATA_PATH}. Dashboard will show static data.")
+            sample_data = None
+            
         yield
     except Exception as e:
         print(f"ERROR (Lifespan Startup): Error during artifact loading: {e}")
@@ -372,10 +401,15 @@ async def get_dashboard_data():
         }
 
     try:
-        # Get a sample of recent data
-        num_transactions_to_process = 500
-        recent_transactions = sample_data.tail(num_transactions_to_process).copy()
-        
+        # Get the last 500 transactions
+        # num_transactions_to_process = 5000
+        # recent_transactions = sample_data.tail(num_transactions_to_process).copy()
+         # Get a random sample of 5000 transactions
+        num_transactions_to_process = 5000
+        if len(sample_data) > num_transactions_to_process:
+            recent_transactions = sample_data.sample(n=num_transactions_to_process).copy()
+        else:
+            recent_transactions = sample_data.copy()
         # Preprocess the data
         recent_transactions['Amount_Scaled'] = scaler_amount.transform(recent_transactions['Amount'].values.reshape(-1, 1))
         recent_transactions['Time_Scaled'] = scaler_time.transform(recent_transactions['Time'].values.reshape(-1, 1))
@@ -433,6 +467,36 @@ async def get_dashboard_data():
     except Exception as e:
         print(f"ERROR (Dashboard Data): Failed to generate dynamic data: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate dynamic dashboard data.")
+
+@app.get("/settings", summary="Get the current application settings.")
+def get_settings():
+    try:
+        with open(SETTINGS_FILE, "r") as f:
+            settings = json.load(f)
+        return JSONResponse(content=settings)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Settings file not found.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve settings: {e}")
+
+@app.post("/settings", summary="Update the application settings.")
+def update_settings(new_settings: SettingsUpdate):
+    try:
+        with open(SETTINGS_FILE, "r") as f:
+            settings = json.load(f)
+
+        settings["OPTIMAL_THRESHOLD"] = new_settings.optimal_threshold
+        
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(settings, f, indent=4)
+            
+        global OPTIMAL_THRESHOLD
+        OPTIMAL_THRESHOLD = new_settings.optimal_threshold
+        
+        return JSONResponse(content={"message": "Settings updated successfully"})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update settings: {e}")
+
 
 @app.get('/')
 async def read_root():
