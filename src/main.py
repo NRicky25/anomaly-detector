@@ -350,11 +350,9 @@ async def upload_file(file: UploadFile = File(...)):
         print(f"ERROR (Upload): Failed to process file: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to process file: {e}")
 
-
-
 @app.post('/predict', summary="Predict if a transaction is fraudulent")
 async def predict_fraud(transactions: Union[TransactionInput, List[TransactionInput]]):
-    global model, scaler_amount, scaler_time, MODEL_FEATURES
+    global model, scaler_amount, scaler_time, MODEL_FEATURES, OPTIMAL_THRESHOLD
 
     if model is None or scaler_amount is None or scaler_time is None or MODEL_FEATURES is None:
         raise HTTPException(status_code=500, detail="ML artifacts not fully loaded. Server startup failed.")
@@ -366,21 +364,29 @@ async def predict_fraud(transactions: Union[TransactionInput, List[TransactionIn
     input_df = pd.DataFrame(input_data_list)
 
     try:
+        # Step 1: Implement a business rule to check for large amounts
+        is_large_amount = input_df['Amount'] > 5000 
+        
+        # Step 2: Preprocess and get the model's probability
         input_df['Amount_Scaled'] = scaler_amount.transform(input_df['Amount'].values.reshape(-1, 1))
         input_df['Time_Scaled'] = scaler_time.transform(input_df['Time'].values.reshape(-1, 1))
         input_df = input_df.drop(['Time', 'Amount'], axis=1)
         input_df = input_df[MODEL_FEATURES]
 
         fraud_probabilities = model.predict_proba(input_df)[:, 1]
-        binary_predictions = (fraud_probabilities >= OPTIMAL_THRESHOLD).astype(int)
-
+        
+        # Step 3: Combine model prediction with the business rule
+        is_model_fraud = (fraud_probabilities >= OPTIMAL_THRESHOLD).astype(bool)
+        is_fraud = is_model_fraud | is_large_amount  # Use the OR operator
+        
+        # Step 4: Format results and return
         results = []
         for i in range(len(input_data_list)):
             results.append({
                 'transaction_index': i,
                 'prediction_probability': float(fraud_probabilities[i]),
-                'predicted_class': int(binary_predictions[i]),
-                'is_fraud': bool(binary_predictions[i])
+                'predicted_class': int(is_fraud[i]),
+                'is_fraud': bool(is_fraud[i])
             })
         return results if len(results) > 1 or isinstance(transactions, list) else results[0]
 
@@ -388,7 +394,7 @@ async def predict_fraud(transactions: Union[TransactionInput, List[TransactionIn
         raise HTTPException(status_code=400, detail=f"Missing expected feature(s): {e}.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {e}")
-
+    
 @app.get("/dashboard/data")
 async def get_dashboard_data():
     global model, scaler_amount, scaler_time, sample_data
