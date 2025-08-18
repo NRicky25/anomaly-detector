@@ -14,6 +14,7 @@ import datetime
 import json
 from pathlib import Path
 from dotenv import load_dotenv
+import pyodbc
 
 load_dotenv()
 API_KEY = os.environ.get("API_KEY")
@@ -43,6 +44,25 @@ OPTIMAL_THRESHOLD = 0.1
 
 app = FastAPI()
 
+connection_string = os.environ.get("DATABASE_URL")
+
+def get_demo_data():
+    """Fetches a sample of transaction data from the database."""
+    data = []
+    try:
+        with pyodbc.connect(connection_string) as cnxn:
+            cursor = cnxn.cursor()
+            query = "SELECT TOP 5000 * FROM demo"
+            cursor.execute(query)
+            columns = [column[0] for column in cursor.description]
+            for row in cursor.fetchall():
+                data.append(dict(zip(columns, row)))
+        return data
+
+    except pyodbc.Error as ex:
+        print(f"Database error: {ex}")
+        return []
+
 class SettingsUpdate(BaseModel):
     optimal_threshold: float
     model_config = ConfigDict(from_attributes=True)
@@ -58,7 +78,7 @@ DEFAULT_MODEL_FEATURES = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global OPTIMAL_THRESHOLD, model, scaler_amount, scaler_time, MODEL_FEATURES, sample_data
+    global OPTIMAL_THRESHOLD, model, scaler_amount, scaler_time, MODEL_FEATURES
     print("DEBUG (Lifespan Startup): Attempting to load ML artifacts...")
 
     # Load settings first to get the OPTIMAL_THRESHOLD
@@ -93,13 +113,6 @@ async def lifespan(app: FastAPI):
         
         print("DEBUG (Lifespan Startup): Model and scalers loaded successfully!")
 
-        if DATA_PATH.exists():
-            sample_data = pd.read_csv(DATA_PATH)
-            print("DEBUG (Lifespan Startup): Sample data loaded successfully!")
-        else:
-            print(f"Warning: Sample data file not found at: {DATA_PATH}. Dashboard will show static data.")
-            sample_data = None
-            
         yield
     except Exception as e:
         print(f"ERROR (Lifespan Startup): Error during artifact loading: {e}")
@@ -160,6 +173,14 @@ class TransactionInput(BaseModel):
         }
     })
 
+if __name__ == '__main__':
+    import uvicorn
+    uvicorn.run("your_module_name:app", host="127.0.0.1", port=8000, reload=True)
+
+@app.get('/healthcheck')
+def healthcheck():
+    return {"status": "ok"}
+
 @app.get("/")
 async def read_root():
     return {"message": "Welcome to the Credit Card Fraud Detection API! Visit /docs for API documentation."}
@@ -176,16 +197,17 @@ def get_reports(
     is_fraud: Optional[bool] = Query(None, description="Filter by fraud status (True/False)."),
     download: Optional[bool] = Query(False, description="Set to True to download a CSV file.")
 ):
-    global sample_data, model, scaler_amount, scaler_time, MODEL_FEATURES
+    global model, scaler_amount, scaler_time, MODEL_FEATURES
 
-    if sample_data is None or model is None or scaler_amount is None or scaler_time is None:
+    if model is None or scaler_amount is None or scaler_time is None:
         raise HTTPException(status_code=500, detail="Data or model not loaded.")
 
     try:
-        # Create a copy to avoid modifying the original data
-        reports_df = sample_data.copy()
-
-        # Add the fraud predictions to the DataFrame
+        reports_data = get_demo_data()
+        if not reports_data:
+            return JSONResponse(content={"total_count": 0, "page": page, "page_size": page_size, "transactions": []})
+        reports_df = pd.DataFrame(reports_data)
+        
         reports_df['Amount_Scaled'] = scaler_amount.transform(reports_df['Amount'].values.reshape(-1, 1))
         reports_df['Time_Scaled'] = scaler_time.transform(reports_df['Time'].values.reshape(-1, 1))
         
@@ -194,7 +216,6 @@ def get_reports(
         reports_df['probability'] = fraud_probabilities
         reports_df['is_fraud'] = (reports_df['probability'] >= OPTIMAL_THRESHOLD)
 
-        # --- Filtering logic ---
         if min_amount is not None:
             reports_df = reports_df[reports_df['Amount'] >= min_amount]
         if max_amount is not None:
@@ -202,11 +223,9 @@ def get_reports(
         if is_fraud is not None:
             reports_df = reports_df[reports_df['is_fraud'] == is_fraud]
 
-        # --- Sorting logic ---
         ascending = sort_order == "asc"
         reports_df = reports_df.sort_values(by=sort_by, ascending=ascending)
 
-        # --- Download logic ---
         if download:
             reports_df = reports_df.drop(columns=['Amount_Scaled', 'Time_Scaled'])
             stream = StringIO()
@@ -215,13 +234,11 @@ def get_reports(
             response.headers["Content-Disposition"] = "attachment; filename=fraud_report.csv"
             return response
 
-        # --- Pagination logic ---
         total_count = len(reports_df)
         start = (page - 1) * page_size
         end = start + page_size
         paginated_df = reports_df.iloc[start:end]
 
-        # Format and return the paginated results
         response_data = {
             "total_count": total_count,
             "page": page,
@@ -238,14 +255,16 @@ def get_reports(
 # Analytics Endpoints
 @app.get("/analytics/trends", dependencies=[Depends(verify_api_key)], summary="Get historical trends for transactions and fraud rates.")
 def get_analytics_trends():
-    global sample_data, model, scaler_amount, scaler_time, MODEL_FEATURES
+    global model, scaler_amount, scaler_time, MODEL_FEATURES
 
-    if sample_data is None or model is None or scaler_amount is None or scaler_time is None:
+    if model is None or scaler_amount is None or scaler_time is None:
         raise HTTPException(status_code=500, detail="Data or model not loaded.")
 
     try:
-        analytics_df = sample_data.copy()
-        
+        analytics_df = get_demo_data()
+        if not analytics_df:
+            return JSONResponse(content={"daily_transactions": [], "daily_fraud_rate": []})
+        analytics_df = pd.DataFrame(analytics_df)
         # Add the fraud predictions
         analytics_df['Amount_Scaled'] = scaler_amount.transform(analytics_df['Amount'].values.reshape(-1, 1))
         analytics_df['Time_Scaled'] = scaler_time.transform(analytics_df['Time'].values.reshape(-1, 1))
@@ -386,9 +405,9 @@ async def predict_fraud(transactions: List[TransactionInput], api_key: str = Dep
 
 @app.get("/dashboard/data", dependencies=[Depends(verify_api_key)])
 async def get_dashboard_data():
-    global model, scaler_amount, scaler_time, sample_data
+    global model, scaler_amount, scaler_time
     
-    if model is None or sample_data is None or scaler_amount is None or scaler_time is None:
+    if model is None or scaler_amount is None or scaler_time is None:
         return {
             "metrics": {"total_anomalies": 0, "total_transactions": 0, "revenue": 0, "traffic": 0},
             "chart": {"labels": [], "datasets": []},
@@ -396,11 +415,19 @@ async def get_dashboard_data():
         }
 
     try:
-        num_transactions_to_process = 5000
-        if len(sample_data) > num_transactions_to_process:
-            recent_transactions = sample_data.sample(n=num_transactions_to_process).copy()
-        else:
-            recent_transactions = sample_data.copy()
+        db_data = get_demo_data()
+        if not db_data:
+            return {
+                "metrics": {"total_anomalies": 0, "total_transactions": 0, "revenue": 0},
+                "chart": {"labels": [], "datasets": []},
+                "recent_anomalies": []
+            }
+        recent_transactions = pd.DataFrame(db_data)
+        # num_transactions_to_process = 5000
+        # if len(sample_data) > num_transactions_to_process:
+        #     recent_transactions = sample_data.sample(n=num_transactions_to_process).copy()
+        # else:
+        #     recent_transactions = sample_data.copy()
         # Preprocess the data
         recent_transactions['Amount_Scaled'] = scaler_amount.transform(recent_transactions['Amount'].values.reshape(-1, 1))
         recent_transactions['Time_Scaled'] = scaler_time.transform(recent_transactions['Time'].values.reshape(-1, 1))
@@ -411,9 +438,9 @@ async def get_dashboard_data():
         is_fraud = (fraud_probabilities >= OPTIMAL_THRESHOLD)
 
         total_anomalies = int(is_fraud.sum())
-        total_transactions = num_transactions_to_process
+        total_transactions = len(recent_transactions)
         total_revenue = round(float(recent_transactions['Amount'].sum()), 2)
-        total_traffic = round(num_transactions_to_process / 10, 1)
+        total_traffic = round(len(recent_transactions) / 10, 1)
 
         daily_anomalies = [int(random.randint(5, 20)) for _ in range(7)]
         
@@ -488,7 +515,3 @@ def update_settings(new_settings: SettingsUpdate):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update settings: {e}")
 
-
-@app.get('/healthcheck')
-def healthcheck():
-    return {"status": "ok"}
