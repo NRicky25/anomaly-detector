@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, File, UploadFile, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from io import StringIO
 import joblib
 import os
@@ -12,7 +12,6 @@ from typing import List, Union, Optional
 import random
 import datetime
 import json
-from pydantic import BaseModel
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -46,6 +45,7 @@ app = FastAPI()
 
 class SettingsUpdate(BaseModel):
     optimal_threshold: float
+    model_config = ConfigDict(from_attributes=True)
 
 
 DEFAULT_MODEL_FEATURES = [
@@ -54,7 +54,6 @@ DEFAULT_MODEL_FEATURES = [
     'V21', 'V22', 'V23', 'V24', 'V25', 'V26', 'V27', 'V28',
     'Amount_Scaled', 'Time_Scaled'
 ]
-
 
 
 @asynccontextmanager
@@ -149,31 +148,29 @@ class TransactionInput(BaseModel):
     V27: float = Field(...)
     V28: float = Field(...)
     Amount: float = Field(...)
-
-    class Config:
-        from_attributes = True
-        json_schema_extra = {
-            "example": {
-                "Time": 123.45, "V1": -0.966, "V2": -0.847, "V3": 1.196, "V4": 0.25,
-                "V5": -0.88, "V6": -0.306, "V7": 0.672, "V8": -0.046, "V9": 0.917,
-                "V10": -0.992, "V11": -0.702, "V12": -0.141, "V13": -0.41,
-                "V14": -0.066, "V15": 0.991, "V16": -0.692, "V17": -0.279,
-                "V18": 0.038, "V19": 0.198, "V20": -0.063, "V21": -0.177,
-                "V22": -0.076, "V23": -0.088, "V24": -0.015, "V25": 0.278,
-                "V26": 0.147, "V27": -0.013, "V28": 0.008, "Amount": 50.0
-            }
+    model_config = ConfigDict(from_attributes=True, json_schema_extra={
+        "example": {
+            "Time": 123.45, "V1": -0.966, "V2": -0.847, "V3": 1.196, "V4": 0.25,
+            "V5": -0.88, "V6": -0.306, "V7": 0.672, "V8": -0.046, "V9": 0.917,
+            "V10": -0.992, "V11": -0.702, "V12": -0.141, "V13": -0.41,
+            "V14": -0.066, "V15": 0.991, "V16": -0.692, "V17": -0.279,
+            "V18": 0.038, "V19": 0.198, "V20": -0.063, "V21": -0.177,
+            "V22": -0.076, "V23": -0.088, "V24": -0.015, "V25": 0.278,
+            "V26": 0.147, "V27": -0.013, "V28": 0.008, "Amount": 50.0
         }
+    })
+
 @app.get("/")
 async def read_root():
     return {"message": "Welcome to the Credit Card Fraud Detection API! Visit /docs for API documentation."}
 
 
-@app.get("/reports/transactions",dependencies=[Depends(verify_api_key)], summary="Get a paginated, filterable list of all transactions.")
+@app.get("/reports/transactions", dependencies=[Depends(verify_api_key)], summary="Get a paginated, filterable list of all transactions.")
 def get_reports(
     page: int = Query(1, ge=1, description="Page number to retrieve."),
     page_size: int = Query(50, ge=1, le=100, description="Number of transactions per page."),
-    sort_by: Optional[str] = Query("Time", regex="^(Time|Amount|probability)$", description="Field to sort by."),
-    sort_order: Optional[str] = Query("desc", regex="^(asc|desc)$", description="Sort order: 'asc' or 'desc'."),
+    sort_by: Optional[str] = Query("Time", pattern="^(Time|Amount|probability)$", description="Field to sort by."),
+    sort_order: Optional[str] = Query("desc", pattern="^(asc|desc)$", description="Sort order: 'asc' or 'desc'."),
     min_amount: Optional[float] = Query(None, ge=0, description="Minimum transaction amount."),
     max_amount: Optional[float] = Query(None, ge=0, description="Maximum transaction amount."),
     is_fraud: Optional[bool] = Query(None, description="Filter by fraud status (True/False)."),
@@ -239,7 +236,7 @@ def get_reports(
         raise HTTPException(status_code=500, detail=f"Failed to generate report: {e}")
     
 # Analytics Endpoints
-@app.get("/analytics/trends",dependencies=[Depends(verify_api_key)], summary="Get historical trends for transactions and fraud rates.")
+@app.get("/analytics/trends", dependencies=[Depends(verify_api_key)], summary="Get historical trends for transactions and fraud rates.")
 def get_analytics_trends():
     global sample_data, model, scaler_amount, scaler_time, MODEL_FEATURES
 
@@ -291,7 +288,7 @@ def get_analytics_trends():
         raise HTTPException(status_code=500, detail=f"Failed to generate analytics data: {e}")
 
 
-@app.post('/upload',dependencies=[Depends(verify_api_key)], summary="Upload a CSV file for prediction")
+@app.post('/upload', dependencies=[Depends(verify_api_key)], summary="Upload a CSV file for prediction")
 async def upload_file(file: UploadFile = File(...)):
     global model, scaler_amount, scaler_time, MODEL_FEATURES
     
@@ -314,11 +311,11 @@ async def upload_file(file: UploadFile = File(...)):
         
         # Check for missing features before dropping
         if not all(feature in input_df.columns for feature in MODEL_FEATURES):
-             missing_features = [f for f in MODEL_FEATURES if f not in input_df.columns]
-             raise HTTPException(
-                 status_code=400, 
-                 detail=f"Input file is missing required features: {', '.join(missing_features)}."
-             )
+            missing_features = [f for f in MODEL_FEATURES if f not in input_df.columns]
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Input file is missing required features: {', '.join(missing_features)}."
+            )
         
         input_df = input_df.drop(['Time', 'Amount'], axis=1)
         input_df = input_df[MODEL_FEATURES]
@@ -356,51 +353,37 @@ async def upload_file(file: UploadFile = File(...)):
         print(f"ERROR (Upload): Failed to process file: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to process file: {e}")
 
-@app.post('/predict',dependencies=[Depends(verify_api_key)], summary="Predict if a transaction is fraudulent")
-async def predict_fraud(transactions: Union[TransactionInput, List[TransactionInput]]):
-    global model, scaler_amount, scaler_time, MODEL_FEATURES, OPTIMAL_THRESHOLD
-
-    if model is None or scaler_amount is None or scaler_time is None or MODEL_FEATURES is None:
-        raise HTTPException(status_code=500, detail="ML artifacts not fully loaded. Server startup failed.")
-
-    if not isinstance(transactions, list):
-        transactions = [transactions]
-
-    input_data_list = [t.model_dump() for t in transactions]
-    input_df = pd.DataFrame(input_data_list)
-
-    try:
-        # Step 1: Implement a business rule to check for large amounts
-        is_large_amount = input_df['Amount'] > 5000 
-        
-        # Step 2: Preprocess and get the model's probability
-        input_df['Amount_Scaled'] = scaler_amount.transform(input_df['Amount'].values.reshape(-1, 1))
-        input_df['Time_Scaled'] = scaler_time.transform(input_df['Time'].values.reshape(-1, 1))
-        input_df = input_df.drop(['Time', 'Amount'], axis=1)
-        input_df = input_df[MODEL_FEATURES]
-
-        fraud_probabilities = model.predict_proba(input_df)[:, 1]
-        
-        # Step 3: Combine model prediction with the business rule
-        is_model_fraud = (fraud_probabilities >= OPTIMAL_THRESHOLD).astype(bool)
-        is_fraud = is_model_fraud | is_large_amount  # Use the OR operator
-        
-        # Step 4: Format results and return
-        results = []
-        for i in range(len(input_data_list)):
-            results.append({
-                'transaction_index': i,
-                'prediction_probability': float(fraud_probabilities[i]),
-                'predicted_class': int(is_fraud[i]),
-                'is_fraud': bool(is_fraud[i])
-            })
-        return results if len(results) > 1 or isinstance(transactions, list) else results[0]
-
-    except KeyError as e:
-        raise HTTPException(status_code=400, detail=f"Missing expected feature(s): {e}.")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {e}")
+@app.post("/predict", summary="Predict if a transaction is fraudulent")
+async def predict_fraud(transactions: List[TransactionInput], api_key: str = Depends(verify_api_key)):
+    if not transactions:
+        raise HTTPException(status_code=400, detail="No transactions provided")
     
+    # Use .model_dump() instead of .dict()
+    input_df = pd.DataFrame([t.model_dump() for t in transactions])
+    
+    is_large_amount = input_df['Amount'] > 5000
+    
+    input_df['Amount_Scaled'] = scaler_amount.transform(input_df['Amount'].values.reshape(-1, 1))
+    input_df['Time_Scaled'] = scaler_time.transform(input_df['Time'].values.reshape(-1, 1))
+    input_df = input_df.drop(['Time', 'Amount'], axis=1)
+    input_df = input_df[MODEL_FEATURES]
+    
+    fraud_probabilities = model.predict_proba(input_df)[:, 1]
+    is_model_fraud = (fraud_probabilities >= OPTIMAL_THRESHOLD)
+    
+    is_fraud = is_model_fraud | is_large_amount
+    
+    results = [
+        {
+            "transaction_index": i,
+            "prediction_probability": float(fraud_probabilities[i]),
+            "predicted_class": int(is_fraud[i]),
+            "is_fraud": bool(is_fraud[i])
+        } for i in range(len(transactions))
+    ]
+    
+    return results
+
 @app.get("/dashboard/data", dependencies=[Depends(verify_api_key)])
 async def get_dashboard_data():
     global model, scaler_amount, scaler_time, sample_data
@@ -413,10 +396,6 @@ async def get_dashboard_data():
         }
 
     try:
-        # Get the last 500 transactions
-        # num_transactions_to_process = 5000
-        # recent_transactions = sample_data.tail(num_transactions_to_process).copy()
-         # Get a random sample of 5000 transactions
         num_transactions_to_process = 5000
         if len(sample_data) > num_transactions_to_process:
             recent_transactions = sample_data.sample(n=num_transactions_to_process).copy()
@@ -480,7 +459,7 @@ async def get_dashboard_data():
         print(f"ERROR (Dashboard Data): Failed to generate dynamic data: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate dynamic dashboard data.")
 
-@app.get("/settings",dependencies=[Depends(verify_api_key)], summary="Get the current application settings.")
+@app.get("/settings", dependencies=[Depends(verify_api_key)], summary="Get the current application settings.")
 def get_settings():
     try:
         with open(SETTINGS_FILE, "r") as f:
@@ -491,7 +470,7 @@ def get_settings():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve settings: {e}")
 
-@app.post("/settings",dependencies=[Depends(verify_api_key)], summary="Update the application settings.")
+@app.post("/settings", dependencies=[Depends(verify_api_key)], summary="Update the application settings.")
 def update_settings(new_settings: SettingsUpdate):
     try:
         with open(SETTINGS_FILE, "r") as f:
@@ -510,6 +489,6 @@ def update_settings(new_settings: SettingsUpdate):
         raise HTTPException(status_code=500, detail=f"Failed to update settings: {e}")
 
 
-@app.get('/')
-async def read_root():
-    return {"message": "Welcome to the Credit Card Fraud Detection API! Visit /docs for API documentation."}
+@app.get('/healthcheck')
+def healthcheck():
+    return {"status": "ok"}
