@@ -29,14 +29,18 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          # Install cross-platform packages
           pip install -r requirements.txt
           pip install pytest uvicorn python-multipart
-          # You might also need to install the ODBC driver in the container
-          # This is a critical step for your workflow to connect to the database
-          # Add the installation steps here if running in a clean runner environment
-          # Example for Ubuntu:
-          # sudo apt-get update
-          # sudo apt-get install -y msodbcsql18 unixodbc-dev
+          # Install Windows-only packages only on Windows runners
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            pip install -r requirements-windows.txt
+          fi
+          # Optional: Install ODBC drivers (example for Ubuntu/Linux)
+          if [ "${{ runner.os }}" == "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y msodbcsql18 unixodbc-dev
+          fi
 
       - name: Run tests
         run: |
