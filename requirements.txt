@@ -76,7 +76,7 @@ nbformat==5.10.4
 nest-asyncio==1.6.0
 notebook==7.4.4
 notebook_shim==0.2.4
-numpy==1.26.4
+numpy>=1.25.0
 orjson==3.11.1
 overrides==7.7.0
 packaging==25.0
@@ -104,7 +104,7 @@ python-dotenv==1.1.1
 python-json-logger==3.3.0
 python-multipart==0.0.20
 pytz==2025.2
-pywin32==311
+pywin32==311; sys_platform == "win32"
 pywinpty==2.0.15
 PyYAML==6.0.2
 pyzmq==27.0.1
