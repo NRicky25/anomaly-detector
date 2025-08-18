@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, File, UploadFile, Depends, Query
+from fastapi import FastAPI, Header, HTTPException, File, UploadFile, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -14,8 +14,14 @@ import datetime
 import json
 from pydantic import BaseModel
 from pathlib import Path
+from dotenv import load_dotenv
 
+load_dotenv()
+API_KEY = os.environ.get("API_KEY")
 
+def verify_api_key(x_api_key: str = Header(...)):
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
 
 #PATH
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -161,8 +167,8 @@ class TransactionInput(BaseModel):
 async def read_root():
     return {"message": "Welcome to the Credit Card Fraud Detection API! Visit /docs for API documentation."}
 
-# --- NEW: Reports endpoint with filtering, sorting, and pagination ---
-@app.get("/reports/transactions", summary="Get a paginated, filterable list of all transactions.")
+
+@app.get("/reports/transactions",dependencies=[Depends(verify_api_key)], summary="Get a paginated, filterable list of all transactions.")
 def get_reports(
     page: int = Query(1, ge=1, description="Page number to retrieve."),
     page_size: int = Query(50, ge=1, le=100, description="Number of transactions per page."),
@@ -233,7 +239,7 @@ def get_reports(
         raise HTTPException(status_code=500, detail=f"Failed to generate report: {e}")
     
 # Analytics Endpoints
-@app.get("/analytics/trends", summary="Get historical trends for transactions and fraud rates.")
+@app.get("/analytics/trends",dependencies=[Depends(verify_api_key)], summary="Get historical trends for transactions and fraud rates.")
 def get_analytics_trends():
     global sample_data, model, scaler_amount, scaler_time, MODEL_FEATURES
 
@@ -285,7 +291,7 @@ def get_analytics_trends():
         raise HTTPException(status_code=500, detail=f"Failed to generate analytics data: {e}")
 
 
-@app.post('/upload', summary="Upload a CSV file for prediction")
+@app.post('/upload',dependencies=[Depends(verify_api_key)], summary="Upload a CSV file for prediction")
 async def upload_file(file: UploadFile = File(...)):
     global model, scaler_amount, scaler_time, MODEL_FEATURES
     
@@ -350,7 +356,7 @@ async def upload_file(file: UploadFile = File(...)):
         print(f"ERROR (Upload): Failed to process file: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to process file: {e}")
 
-@app.post('/predict', summary="Predict if a transaction is fraudulent")
+@app.post('/predict',dependencies=[Depends(verify_api_key)], summary="Predict if a transaction is fraudulent")
 async def predict_fraud(transactions: Union[TransactionInput, List[TransactionInput]]):
     global model, scaler_amount, scaler_time, MODEL_FEATURES, OPTIMAL_THRESHOLD
 
@@ -395,7 +401,7 @@ async def predict_fraud(transactions: Union[TransactionInput, List[TransactionIn
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {e}")
     
-@app.get("/dashboard/data")
+@app.get("/dashboard/data", dependencies=[Depends(verify_api_key)])
 async def get_dashboard_data():
     global model, scaler_amount, scaler_time, sample_data
     
@@ -474,7 +480,7 @@ async def get_dashboard_data():
         print(f"ERROR (Dashboard Data): Failed to generate dynamic data: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate dynamic dashboard data.")
 
-@app.get("/settings", summary="Get the current application settings.")
+@app.get("/settings",dependencies=[Depends(verify_api_key)], summary="Get the current application settings.")
 def get_settings():
     try:
         with open(SETTINGS_FILE, "r") as f:
@@ -485,7 +491,7 @@ def get_settings():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve settings: {e}")
 
-@app.post("/settings", summary="Update the application settings.")
+@app.post("/settings",dependencies=[Depends(verify_api_key)], summary="Update the application settings.")
 def update_settings(new_settings: SettingsUpdate):
     try:
         with open(SETTINGS_FILE, "r") as f:
