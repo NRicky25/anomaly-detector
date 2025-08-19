@@ -45,14 +45,14 @@ OPTIMAL_THRESHOLD = 0.1
 app = FastAPI()
 
 origins = [
-    "https://elegant-crostata-101fff.netlify.app",  # Netlify
-    "http://localhost:5173",  # local dev
+    "https://elegant-crostata-101fff.netlify.app",
+    "http://localhost:5173",
 ]
 
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
