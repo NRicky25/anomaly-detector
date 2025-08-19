@@ -44,20 +44,6 @@ OPTIMAL_THRESHOLD = 0.1
 
 app = FastAPI()
 
-origins = [
-    "https://elegant-crostata-101fff.netlify.app",
-    "http://localhost:5173",
-]
-
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 connection_string = os.environ.get("DATABASE_URL")
 
 def get_demo_data():
@@ -141,9 +127,8 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-origins = ["http://localhost", "http://localhost:5173", "http://127.0.0.1:5173"]
+origins = ["http://localhost", "http://localhost:5173", "http://127.0.0.1:5173", "https://elegant-crostata-101fff.netlify.app"]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-
 class TransactionInput(BaseModel):
     Time: float = Field(...)
     V1: float = Field(...)
