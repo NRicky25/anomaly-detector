@@ -14,15 +14,18 @@ import datetime
 import json
 from pathlib import Path
 from dotenv import load_dotenv
+import pyodbc
+
 
 load_dotenv()
 API_KEY = os.environ.get("API_KEY")
+DB_CONNECTION_STRING = os.environ.get("DATABASE_URL")
 
 def verify_api_key(x_api_key: str = Header(...)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
-#PATH
+# PATH
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 def get_path(*paths):
@@ -34,23 +37,32 @@ SCALER_TIME_PATH = get_path("models", "development", "scaler_time.joblib")
 DATA_PATH = get_path("data", "raw", "creditcard.csv")
 SETTINGS_FILE = get_path("src", "settings.json")
 
-#GLOBALS
+# GLOBALS
 OPTIMAL_THRESHOLD = None
 model = None
 scaler_amount = None
 scaler_time = None
 OPTIMAL_THRESHOLD = 0.1
-# engine = None # Removed as it's no longer needed
-
-# In-memory data
-demo_data_df = None
 
 def get_demo_data():
-    """Fetches a sample of transaction data from the in-memory dataframe."""
-    global demo_data_df
-    if demo_data_df is None:
-        raise RuntimeError("Demo data not loaded.")
-    return demo_data_df.to_dict(orient="records")
+    """Fetches a sample of transaction data from the database using pyodbc."""
+    data = []
+    try:
+        with pyodbc.connect(DB_CONNECTION_STRING) as connection:
+            cursor = connection.cursor()
+            query = "SELECT TOP 5000 * FROM demo"
+            cursor.execute(query)
+            columns = [column[0] for column in cursor.description]
+            for row in cursor:
+                data.append(dict(zip(columns, row)))
+        return data
+    except Exception as ex:
+        print(f"Database error: {ex}")
+        return []
+
+class SettingsUpdate(BaseModel):
+    optimal_threshold: float
+    model_config = ConfigDict(from_attributes=True)
 
 DEFAULT_MODEL_FEATURES = [
     'V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', 'V9', 'V10',
@@ -61,7 +73,7 @@ DEFAULT_MODEL_FEATURES = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global OPTIMAL_THRESHOLD, model, scaler_amount, scaler_time, MODEL_FEATURES, demo_data_df
+    global OPTIMAL_THRESHOLD, model, scaler_amount, scaler_time, MODEL_FEATURES
     print("DEBUG (Lifespan Startup): Attempting to load ML artifacts...")
 
     # Load settings first to get the OPTIMAL_THRESHOLD
@@ -84,8 +96,6 @@ async def lifespan(app: FastAPI):
             raise FileNotFoundError(f"Amount scaler file not found at: {SCALER_AMOUNT_PATH}")
         if not SCALER_TIME_PATH.exists():
             raise FileNotFoundError(f"Time scaler file not found at: {SCALER_TIME_PATH}")
-        if not DATA_PATH.exists():
-            raise FileNotFoundError(f"Demo data file not found at: {DATA_PATH}")
 
         model = joblib.load(MODEL_PATH)
         scaler_amount = joblib.load(SCALER_AMOUNT_PATH)
@@ -98,17 +108,13 @@ async def lifespan(app: FastAPI):
         
         print("DEBUG (Lifespan Startup): Model and scalers loaded successfully!")
         
-        # Load demo data into memory
-        demo_data_df = pd.read_csv(DATA_PATH).sample(n=5000, random_state=42)
-        print("DEBUG (Lifespan Startup): Demo data loaded into memory successfully.")
-
         yield
     except Exception as e:
         print(f"ERROR (Lifespan Startup): Error during artifact loading: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to load ML artifacts during startup: {e}.")
     finally:
         print("DEBUG (Lifespan Shutdown): Application shutdown completed.")
-
+        
 app = FastAPI(
     title="Credit Card Fraud Detection API",
     description="A FastAPI endpoint for predicting credit card fraud using a pre-trained Random Forest model.",
@@ -162,10 +168,6 @@ class TransactionInput(BaseModel):
         }
     })
 
-class SettingsUpdate(BaseModel):
-    optimal_threshold: float
-    model_config = ConfigDict(from_attributes=True)
-
 if __name__ == '__main__':
     import uvicorn
     uvicorn.run("your_module_name:app", host="127.0.0.1", port=8000, reload=True)
@@ -177,7 +179,6 @@ def healthcheck():
 @app.get("/")
 async def read_root():
     return {"message": "Welcome to the Credit Card Fraud Detection API! Visit /docs for API documentation."}
-
 
 @app.get("/reports/transactions", dependencies=[Depends(verify_api_key)], summary="Get a paginated, filterable list of all transactions.")
 def get_reports(
@@ -298,7 +299,6 @@ def get_analytics_trends():
     except Exception as e:
         print(f"ERROR (Analytics): Failed to generate analytics data: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate analytics data: {e}")
-
 
 @app.post('/upload', dependencies=[Depends(verify_api_key)], summary="Upload a CSV file for prediction")
 async def upload_file(file: UploadFile = File(...)):
