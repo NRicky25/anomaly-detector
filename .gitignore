@@ -15,5 +15,6 @@ __pycache__/
 # Data & Models (Do NOT commit large files or sensitive data!)
 data/raw/
 data/processed/
+src/mongodb.py
 *.pkl # Be selective about which .pkl files to commit if many
 *.h5

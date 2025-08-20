@@ -13,14 +13,16 @@ import random
 import json
 from pathlib import Path
 from dotenv import load_dotenv
-import pyodbc
 from functools import lru_cache
 import time
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure, OperationFailure
 
 
 load_dotenv()
 API_KEY = os.environ.get("API_KEY")
-DB_CONNECTION_STRING = os.environ.get("DATABASE_URL")
+# DB_CONNECTION_STRING = os.environ.get("DATABASE_URL")
+MONGO_URL = os.environ.get("DATABASE_URL")
 
 def verify_api_key(x_api_key: str = Header(...)):
     if x_api_key != API_KEY:
@@ -35,7 +37,7 @@ def get_path(*paths):
 MODEL_PATH = get_path("models", "development", "random_forest_model.joblib")
 SCALER_AMOUNT_PATH = get_path("models", "development", "scaler_amount.joblib")
 SCALER_TIME_PATH = get_path("models", "development", "scaler_time.joblib")
-DATA_PATH = get_path("data", "raw", "creditcard.csv")
+# DATA_PATH = get_path("data", "raw", "creditcard.csv")
 SETTINGS_FILE = get_path("src", "settings.json")
 
 # GLOBALS
@@ -46,30 +48,40 @@ scaler_time = None
 OPTIMAL_THRESHOLD = 0.1
 
 @lru_cache(maxsize=1, typed=False)
-def get_demo_data_cached(timestamp: int):
-    """Fetches a sample of transaction data from the database using pyodbc.
+def get_all_data_cached(timestamp: int):
+    """Fetches all transaction data from MongoDB.
     The timestamp argument is used to bust the cache after a period of time.
     """
-    print("Fetching data from database...")
-    data = []
+    client = None
     try:
-        with pyodbc.connect(DB_CONNECTION_STRING) as connection:
-            cursor = connection.cursor()
-            query = "SELECT TOP 5000 * FROM demo"
-            cursor.execute(query)
-            columns = [column[0] for column in cursor.description]
-            for row in cursor:
-                data.append(dict(zip(columns, row)))
+        print("Fetching data from MongoDB...")
+        client = MongoClient(MONGO_URL)
+        
+        db = client["anomaly-data"]
+        collection = db["demo"]
+        
+        # Get all documents from the collection and return as a list
+        data = list(collection.find())
+        
+        # Remove the MongoDB-specific _id field to avoid DataFrame issues
+        for item in data:
+            item.pop('_id', None)
+            
         return data
-    except Exception as ex:
-        print(f"Database error: {ex}")
+    except (ConnectionFailure, OperationFailure) as ex:
+        print(f"MongoDB connection error: {ex}")
         return []
+    except Exception as ex:
+        print(f"An error occurred while fetching data from MongoDB: {ex}")
+        return []
+    finally:
+        if client:
+            client.close()
 
 def get_demo_data():
     """Wrapper function that uses the cached version with a TTL of 60 seconds."""
     # Use a timestamp to invalidate the cache every 60 seconds
-    # The // 60 makes the timestamp change only once per minute
-    return get_demo_data_cached(timestamp=time.time() // 60)
+    return get_all_data_cached(timestamp=time.time() // 60)
 
 
 class SettingsUpdate(BaseModel):
