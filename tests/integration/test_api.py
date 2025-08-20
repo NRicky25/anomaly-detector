@@ -26,7 +26,6 @@ def client():
     # Clean up the environment variable after the test
     del os.environ["API_KEY"]
 
-
 def test_healthcheck(client):
     """Check if the API is running."""
     response = client.get("/healthcheck")

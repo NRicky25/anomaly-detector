@@ -14,8 +14,6 @@ import datetime
 import json
 from pathlib import Path
 from dotenv import load_dotenv
-import pyodbc
-from sqlalchemy import create_engine, text
 
 load_dotenv()
 API_KEY = os.environ.get("API_KEY")
@@ -42,32 +40,17 @@ model = None
 scaler_amount = None
 scaler_time = None
 OPTIMAL_THRESHOLD = 0.1
-engine = None
+# engine = None # Removed as it's no longer needed
 
-app = FastAPI()
-
-connection_string = os.environ.get("DATABASE_URL")
+# In-memory data
+demo_data_df = None
 
 def get_demo_data():
-    """Fetches a sample of transaction data from the database."""
-    data = []
-    try:
-        with engine.connect() as connection:
-            query = "SELECT TOP 5000 * FROM demo"
-            result = connection.execute(text(query))
-            columns = result.keys()
-            for row in result:
-                data.append(dict(zip(columns, row)))
-        return data
-
-    except Exception as ex:
-        print(f"Database error: {ex}")
-        return []
-
-class SettingsUpdate(BaseModel):
-    optimal_threshold: float
-    model_config = ConfigDict(from_attributes=True)
-
+    """Fetches a sample of transaction data from the in-memory dataframe."""
+    global demo_data_df
+    if demo_data_df is None:
+        raise RuntimeError("Demo data not loaded.")
+    return demo_data_df.to_dict(orient="records")
 
 DEFAULT_MODEL_FEATURES = [
     'V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', 'V9', 'V10',
@@ -76,10 +59,9 @@ DEFAULT_MODEL_FEATURES = [
     'Amount_Scaled', 'Time_Scaled'
 ]
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global OPTIMAL_THRESHOLD, model, scaler_amount, scaler_time, MODEL_FEATURES, engine # <-- ADD 'engine' HERE
+    global OPTIMAL_THRESHOLD, model, scaler_amount, scaler_time, MODEL_FEATURES, demo_data_df
     print("DEBUG (Lifespan Startup): Attempting to load ML artifacts...")
 
     # Load settings first to get the OPTIMAL_THRESHOLD
@@ -102,6 +84,8 @@ async def lifespan(app: FastAPI):
             raise FileNotFoundError(f"Amount scaler file not found at: {SCALER_AMOUNT_PATH}")
         if not SCALER_TIME_PATH.exists():
             raise FileNotFoundError(f"Time scaler file not found at: {SCALER_TIME_PATH}")
+        if not DATA_PATH.exists():
+            raise FileNotFoundError(f"Demo data file not found at: {DATA_PATH}")
 
         model = joblib.load(MODEL_PATH)
         scaler_amount = joblib.load(SCALER_AMOUNT_PATH)
@@ -114,10 +98,9 @@ async def lifespan(app: FastAPI):
         
         print("DEBUG (Lifespan Startup): Model and scalers loaded successfully!")
         
-        # ADD THESE TWO LINES to create the connection pool
-        connection_string = os.environ.get("DATABASE_URL")
-        engine = create_engine(connection_string, pool_size=5, max_overflow=10)
-        print("DEBUG (Lifespan Startup): SQLAlchemy engine and connection pool created.")
+        # Load demo data into memory
+        demo_data_df = pd.read_csv(DATA_PATH).sample(n=5000, random_state=42)
+        print("DEBUG (Lifespan Startup): Demo data loaded into memory successfully.")
 
         yield
     except Exception as e:
@@ -125,7 +108,7 @@ async def lifespan(app: FastAPI):
         raise HTTPException(status_code=500, detail=f"Failed to load ML artifacts during startup: {e}.")
     finally:
         print("DEBUG (Lifespan Shutdown): Application shutdown completed.")
-        
+
 app = FastAPI(
     title="Credit Card Fraud Detection API",
     description="A FastAPI endpoint for predicting credit card fraud using a pre-trained Random Forest model.",
@@ -178,6 +161,10 @@ class TransactionInput(BaseModel):
             "V26": 0.147, "V27": -0.013, "V28": 0.008, "Amount": 50.0
         }
     })
+
+class SettingsUpdate(BaseModel):
+    optimal_threshold: float
+    model_config = ConfigDict(from_attributes=True)
 
 if __name__ == '__main__':
     import uvicorn
@@ -520,4 +507,3 @@ def update_settings(new_settings: SettingsUpdate):
         return JSONResponse(content={"message": "Settings updated successfully"})
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update settings: {e}")
-
