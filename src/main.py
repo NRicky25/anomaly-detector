@@ -10,11 +10,12 @@ import pandas as pd
 import numpy as np
 from typing import List, Union, Optional
 import random
-import datetime
 import json
 from pathlib import Path
 from dotenv import load_dotenv
 import pyodbc
+from functools import lru_cache
+import time
 
 
 load_dotenv()
@@ -44,8 +45,12 @@ scaler_amount = None
 scaler_time = None
 OPTIMAL_THRESHOLD = 0.1
 
-def get_demo_data():
-    """Fetches a sample of transaction data from the database using pyodbc."""
+@lru_cache(maxsize=1, typed=False)
+def get_demo_data_cached(timestamp: int):
+    """Fetches a sample of transaction data from the database using pyodbc.
+    The timestamp argument is used to bust the cache after a period of time.
+    """
+    print("Fetching data from database...")
     data = []
     try:
         with pyodbc.connect(DB_CONNECTION_STRING) as connection:
@@ -59,6 +64,13 @@ def get_demo_data():
     except Exception as ex:
         print(f"Database error: {ex}")
         return []
+
+def get_demo_data():
+    """Wrapper function that uses the cached version with a TTL of 60 seconds."""
+    # Use a timestamp to invalidate the cache every 60 seconds
+    # The // 60 makes the timestamp change only once per minute
+    return get_demo_data_cached(timestamp=time.time() // 60)
+
 
 class SettingsUpdate(BaseModel):
     optimal_threshold: float
