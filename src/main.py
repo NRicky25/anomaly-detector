@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 from dotenv import load_dotenv
 import pyodbc
+from sqlalchemy import create_engine, text
 
 load_dotenv()
 API_KEY = os.environ.get("API_KEY")
@@ -41,6 +42,7 @@ model = None
 scaler_amount = None
 scaler_time = None
 OPTIMAL_THRESHOLD = 0.1
+engine = None
 
 app = FastAPI()
 
@@ -50,16 +52,15 @@ def get_demo_data():
     """Fetches a sample of transaction data from the database."""
     data = []
     try:
-        with pyodbc.connect(connection_string) as cnxn:
-            cursor = cnxn.cursor()
+        with engine.connect() as connection:
             query = "SELECT TOP 5000 * FROM demo"
-            cursor.execute(query)
-            columns = [column[0] for column in cursor.description]
-            for row in cursor.fetchall():
+            result = connection.execute(text(query))
+            columns = result.keys()
+            for row in result:
                 data.append(dict(zip(columns, row)))
         return data
 
-    except pyodbc.Error as ex:
+    except Exception as ex:
         print(f"Database error: {ex}")
         return []
 
@@ -78,7 +79,7 @@ DEFAULT_MODEL_FEATURES = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global OPTIMAL_THRESHOLD, model, scaler_amount, scaler_time, MODEL_FEATURES
+    global OPTIMAL_THRESHOLD, model, scaler_amount, scaler_time, MODEL_FEATURES, engine # <-- ADD 'engine' HERE
     print("DEBUG (Lifespan Startup): Attempting to load ML artifacts...")
 
     # Load settings first to get the OPTIMAL_THRESHOLD
@@ -112,6 +113,11 @@ async def lifespan(app: FastAPI):
             MODEL_FEATURES = DEFAULT_MODEL_FEATURES
         
         print("DEBUG (Lifespan Startup): Model and scalers loaded successfully!")
+        
+        # ADD THESE TWO LINES to create the connection pool
+        connection_string = os.environ.get("DATABASE_URL")
+        engine = create_engine(connection_string, pool_size=5, max_overflow=10)
+        print("DEBUG (Lifespan Startup): SQLAlchemy engine and connection pool created.")
 
         yield
     except Exception as e:
@@ -119,7 +125,7 @@ async def lifespan(app: FastAPI):
         raise HTTPException(status_code=500, detail=f"Failed to load ML artifacts during startup: {e}.")
     finally:
         print("DEBUG (Lifespan Shutdown): Application shutdown completed.")
-
+        
 app = FastAPI(
     title="Credit Card Fraud Detection API",
     description="A FastAPI endpoint for predicting credit card fraud using a pre-trained Random Forest model.",
