@@ -15,7 +15,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from functools import lru_cache
 import time
-from pymongo import MongoClient
+from pymongo import MongoClient, UpdateOne
 from pymongo.errors import ConnectionFailure, OperationFailure
 
 
@@ -47,26 +47,21 @@ scaler_amount = None
 scaler_time = None
 OPTIMAL_THRESHOLD = 0.1
 
-@lru_cache(maxsize=1, typed=False)
-def get_all_data_cached(timestamp: int):
-    """Fetches all transaction data from MongoDB.
-    The timestamp argument is used to bust the cache after a period of time.
-    """
+
+def get_demo_data():
     client = None
+
     try:
         print("Fetching data from MongoDB...")
         client = MongoClient(MONGO_URL)
-        
         db = client["anomaly-data"]
         collection = db["demo"]
+
+        data = list(collection.find(
+            {},
+            {"_id": 0, "Amount": 1, "Time": 1, "probability": 1, "is_fraud": 1}
+        ).sort("Time", -1).limit(5000))
         
-        # Get all documents from the collection and return as a list
-        data = list(collection.find())
-        
-        # Remove the MongoDB-specific _id field to avoid DataFrame issues
-        for item in data:
-            item.pop('_id', None)
-            
         return data
     except (ConnectionFailure, OperationFailure) as ex:
         print(f"MongoDB connection error: {ex}")
@@ -78,11 +73,57 @@ def get_all_data_cached(timestamp: int):
         if client:
             client.close()
 
-def get_demo_data():
-    """Wrapper function that uses the cached version with a TTL of 60 seconds."""
-    # Use a timestamp to invalidate the cache every 60 seconds
-    return get_all_data_cached(timestamp=time.time() // 60)
+def update_predictions():
+    global model, scaler_amount, scaler_time, MODEL_FEATURES
 
+    if model is None or scaler_amount is None or scaler_time is None:
+        print("Machine learning artifact not loaded. Cannot run update job.")
+        return 
+    
+    client = None
+    try:
+        print("Running background prediction update...")
+        client = MongoClient(MONGO_URL)
+        db = client["anomaly-data"]
+        collection = db["demo"]
+
+        new_docs = list(collection.find({"probability": {"$exists": False}}))
+
+        if not new_docs:
+            print("No new documents to update. Exiting update job.")
+            return
+        
+        print(f"Found {len(new_docs)} new documents to process.")
+        
+        df = pd.DataFrame(new_docs)
+
+        df['Amount_Scaled'] = scaler_amount.transform(df['Amount'].values.reshape(-1, 1))
+        df['Time_Scaled'] = scaler_time.transform(df['Time'].values.reshape(-1, 1))
+
+        feature_to_predict = df[MODEL_FEATURES]
+
+        fraud_probabilities = model.predict_proba(feature_to_predict)[:, 1]
+        is_fraud_predictions = (fraud_probabilities >= OPTIMAL_THRESHOLD)
+        
+        ops = []
+        for i, doc in enumerate(new_docs):
+            ops.append(UpdateOne(
+                {"_id": doc["_id"]},
+                {"$set": {
+                    "probability": float(fraud_probabilities[i]),
+                    "is_fraud": bool(is_fraud_predictions[i])
+                }}
+            ))
+
+        if ops:
+            collection.bulk_write(ops)
+            print(f"Successfully updated {len(new_docs)} documents in bulk.")
+
+    except Exception as ex:
+        print(f"An error occurred during the predction update: {ex}")
+    finally: 
+        if client:
+            client.close()
 
 class SettingsUpdate(BaseModel):
     optimal_threshold: float
@@ -124,12 +165,14 @@ async def lifespan(app: FastAPI):
         model = joblib.load(MODEL_PATH)
         scaler_amount = joblib.load(SCALER_AMOUNT_PATH)
         scaler_time = joblib.load(SCALER_TIME_PATH)
-
+        
         if hasattr(model, 'feature_names_in_'):
             MODEL_FEATURES = model.feature_names_in_.tolist()
         else:
             MODEL_FEATURES = DEFAULT_MODEL_FEATURES
         
+        update_predictions()
+
         print("DEBUG (Lifespan Startup): Model and scalers loaded successfully!")
         
         yield
@@ -215,25 +258,12 @@ def get_reports(
     is_fraud: Optional[bool] = Query(None, description="Filter by fraud status (True/False)."),
     download: Optional[bool] = Query(False, description="Set to True to download a CSV file.")
 ):
-    global model, scaler_amount, scaler_time, MODEL_FEATURES
-
-    if model is None or scaler_amount is None or scaler_time is None:
-        raise HTTPException(status_code=500, detail="Data or model not loaded.")
-
     try:
         reports_data = get_demo_data()
         if not reports_data:
             return JSONResponse(content={"total_count": 0, "page": page, "page_size": page_size, "transactions": []})
         reports_df = pd.DataFrame(reports_data)
         
-        reports_df['Amount_Scaled'] = scaler_amount.transform(reports_df['Amount'].values.reshape(-1, 1))
-        reports_df['Time_Scaled'] = scaler_time.transform(reports_df['Time'].values.reshape(-1, 1))
-        
-        features_to_predict = reports_df[MODEL_FEATURES]
-        fraud_probabilities = model.predict_proba(features_to_predict)[:, 1]
-        reports_df['probability'] = fraud_probabilities
-        reports_df['is_fraud'] = (reports_df['probability'] >= OPTIMAL_THRESHOLD)
-
         if min_amount is not None:
             reports_df = reports_df[reports_df['Amount'] >= min_amount]
         if max_amount is not None:
@@ -245,7 +275,6 @@ def get_reports(
         reports_df = reports_df.sort_values(by=sort_by, ascending=ascending)
 
         if download:
-            reports_df = reports_df.drop(columns=['Amount_Scaled', 'Time_Scaled'])
             stream = StringIO()
             reports_df.to_csv(stream, index=False)
             response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
@@ -273,56 +302,49 @@ def get_reports(
 # Analytics Endpoints
 @app.get("/analytics/trends", dependencies=[Depends(verify_api_key)], summary="Get historical trends for transactions and fraud rates.")
 def get_analytics_trends():
-    global model, scaler_amount, scaler_time, MODEL_FEATURES
-
-    if model is None or scaler_amount is None or scaler_time is None:
-        raise HTTPException(status_code=500, detail="Data or model not loaded.")
-
     try:
-        analytics_df = get_demo_data()
-        if not analytics_df:
+        analytics_data = get_demo_data()
+        if not analytics_data:
             return JSONResponse(content={"daily_transactions": [], "daily_fraud_rate": []})
-        analytics_df = pd.DataFrame(analytics_df)
-        # Add the fraud predictions
-        analytics_df['Amount_Scaled'] = scaler_amount.transform(analytics_df['Amount'].values.reshape(-1, 1))
-        analytics_df['Time_Scaled'] = scaler_time.transform(analytics_df['Time'].values.reshape(-1, 1))
-        features_to_predict = analytics_df[MODEL_FEATURES]
-        fraud_probabilities = model.predict_proba(features_to_predict)[:, 1]
-        analytics_df['is_fraud'] = (fraud_probabilities >= OPTIMAL_THRESHOLD)
 
-        # Convert 'Time' (seconds) to a proper datetime object
+        analytics_df = pd.DataFrame(analytics_data)
+
+        # Use cached predictions directly
+        if "is_fraud" not in analytics_df.columns or "probability" not in analytics_df.columns:
+            raise HTTPException(status_code=500, detail="Cached predictions not found in database.")
+
+        # Convert 'Time' (seconds) to datetime
         analytics_df['datetime'] = pd.to_datetime(analytics_df['Time'], unit='s')
         analytics_df['date'] = analytics_df['datetime'].dt.date
 
-        # Calculate daily totals
+        # Daily totals
         daily_transactions = analytics_df.groupby('date').size().reset_index(name='count')
-        daily_fraud_count = analytics_df[analytics_df['is_fraud']].groupby('date').size().reset_index(name='fraud_count')
-        
-        # Merge to get fraud rate
+        daily_fraud_count = analytics_df[analytics_df['is_fraud'] == True].groupby('date').size().reset_index(name='fraud_count')
+
+        # Merge and calculate fraud rate
         daily_trends = pd.merge(daily_transactions, daily_fraud_count, on='date', how='left').fillna(0)
         daily_trends['rate'] = daily_trends['fraud_count'] / daily_trends['count']
 
-        # Format for JSON response
-        daily_transactions_list = [{
-            "date": str(row['date']),
-            "count": int(row['count'])
-        } for index, row in daily_transactions.iterrows()]
+        # Format response
+        daily_transactions_list = [
+            {"date": str(row['date']), "count": int(row['count'])}
+            for _, row in daily_transactions.iterrows()
+        ]
 
-        daily_fraud_rate_list = [{
-            "date": str(row['date']),
-            "rate": float(row['rate'])
-        } for index, row in daily_trends.iterrows()]
-        
-        response_data = {
+        daily_fraud_rate_list = [
+            {"date": str(row['date']), "rate": float(row['rate'])}
+            for _, row in daily_trends.iterrows()
+        ]
+
+        return JSONResponse(content={
             "daily_transactions": daily_transactions_list,
             "daily_fraud_rate": daily_fraud_rate_list
-        }
+        })
 
-        return JSONResponse(content=response_data)
-    
     except Exception as e:
         print(f"ERROR (Analytics): Failed to generate analytics data: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate analytics data: {e}")
+
 
 @app.post('/upload', dependencies=[Depends(verify_api_key)], summary="Upload a CSV file for prediction")
 async def upload_file(file: UploadFile = File(...)):
@@ -422,15 +444,6 @@ async def predict_fraud(transactions: List[TransactionInput], api_key: str = Dep
 
 @app.get("/dashboard/data", dependencies=[Depends(verify_api_key)])
 async def get_dashboard_data():
-    global model, scaler_amount, scaler_time
-    
-    if model is None or scaler_amount is None or scaler_time is None:
-        return {
-            "metrics": {"total_anomalies": 0, "total_transactions": 0, "revenue": 0, "traffic": 0},
-            "chart": {"labels": [], "datasets": []},
-            "recent_anomalies": []
-        }
-
     try:
         db_data = get_demo_data()
         if not db_data:
@@ -440,19 +453,8 @@ async def get_dashboard_data():
                 "recent_anomalies": []
             }
         recent_transactions = pd.DataFrame(db_data)
-        # num_transactions_to_process = 5000
-        # if len(sample_data) > num_transactions_to_process:
-        #     recent_transactions = sample_data.sample(n=num_transactions_to_process).copy()
-        # else:
-        #     recent_transactions = sample_data.copy()
-        # Preprocess the data
-        recent_transactions['Amount_Scaled'] = scaler_amount.transform(recent_transactions['Amount'].values.reshape(-1, 1))
-        recent_transactions['Time_Scaled'] = scaler_time.transform(recent_transactions['Time'].values.reshape(-1, 1))
         
-        features_to_predict = recent_transactions[MODEL_FEATURES]
-        
-        fraud_probabilities = model.predict_proba(features_to_predict)[:, 1]
-        is_fraud = (fraud_probabilities >= OPTIMAL_THRESHOLD)
+        is_fraud = recent_transactions['is_fraud']
 
         total_anomalies = int(is_fraud.sum())
         total_transactions = len(recent_transactions)
